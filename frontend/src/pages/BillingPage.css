@@ -1,0 +1,921 @@
+/* ==========================================================================
+   DESKTOP BILLING & INVOICE GENERATION MODULE
+   Matches reference Indian Footwear Retail POS / GST Billing Software Layout
+   Clean White / Light-Grey Theme (#f8fafc / #ffffff / #e2e8f0)
+   ========================================================================== */
+
+.desktop-billing-wrapper {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  background-color: #f8fafc;
+  color: #0f172a;
+  padding: 14px 16px 20px 16px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  display: flex;
+  flex-direction: column;
+}
+
+/* --------------------------------------------------------------------------
+   1. TOP BAR / HEADER CARD
+   -------------------------------------------------------------------------- */
+.billing-header-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+
+.billing-header-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 12px;
+}
+
+.billing-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.billing-main-heading {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.billing-shop-badge {
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  border: 1px solid #bfdbfe;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.billing-header-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Top Fields Grid (5 Clean Columns: Name, Phone, Address, Inv No, Date) */
+.billing-fields-grid {
+  display: grid;
+  grid-template-columns: 1.8fr 1.2fr 2.2fr 1fr 1fr;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+@media (max-width: 1100px) {
+  .billing-fields-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .billing-fields-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bill-field-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bill-field-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #475569;
+  letter-spacing: 0.03em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bill-field-input,
+.bill-field-select {
+  height: 35px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 0.84rem;
+  color: #0f172a;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.bill-field-input:focus,
+.bill-field-select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.bill-field-input[readonly],
+.bill-field-input:disabled {
+  background-color: #f8fafc;
+  color: #475569;
+  cursor: not-allowed;
+}
+
+.invoice-no-highlight {
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.customer-input-wrap {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-add-customer-quick {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  color: #2563eb;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.btn-add-customer-quick:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+/* --------------------------------------------------------------------------
+   2. INTEGRATED BARCODE SCANNER SECTION
+   -------------------------------------------------------------------------- */
+.billing-scanner-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  padding: 10px 16px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.unified-scanner-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 320px;
+}
+
+.unified-scanner-input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.unified-scanner-icon {
+  position: absolute;
+  left: 12px;
+  color: #2563eb;
+  pointer-events: none;
+}
+
+.unified-scanner-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 34px 0 40px;
+  border: 1.5px solid #93c5fd;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: #ffffff;
+  color: #0f172a;
+  outline: none;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+}
+
+.unified-scanner-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.unified-scanner-input::placeholder {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.scanner-clear-btn {
+  position: absolute;
+  right: 10px;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.scanner-clear-btn:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+.unified-scanner-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 38px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}
+
+.unified-scanner-status-badge.status-ready {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+.unified-scanner-status-badge.status-scanning {
+  background: #fefce8;
+  color: #ca8a04;
+  border: 1px solid #fef08a;
+}
+
+.unified-scanner-status-badge.status-success {
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+}
+
+.unified-scanner-status-badge.status-error {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.scanner-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+
+.status-scanning .scanner-status-dot {
+  animation: pulseScanDot 1s infinite;
+}
+
+@keyframes pulseScanDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.btn-scanner-submit {
+  height: 38px;
+  padding: 0 16px;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.btn-scanner-submit:hover {
+  background: #1d4ed8;
+}
+
+.scanner-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-add-table-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-add-table-row:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.table-items-count-pill {
+  font-size: 0.8rem;
+  color: #475569;
+  font-weight: 700;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   3. UNIFIED PRODUCT BILLING TABLE CARD
+   -------------------------------------------------------------------------- */
+.billing-table-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+/* Full-width Table (8 Perfectly Aligned Columns) */
+.desktop-billing-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.desktop-billing-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.82rem;
+}
+
+.desktop-billing-table thead th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 9px 10px;
+  border-bottom: 2px solid #e2e8f0;
+  border-right: 1px solid #f1f5f9;
+  white-space: nowrap;
+}
+
+.desktop-billing-table tbody td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #f8fafc;
+  vertical-align: middle;
+  background: #ffffff;
+}
+
+.desktop-billing-table tbody tr:hover td {
+  background: #fbfcfe;
+}
+
+/* Table Inputs */
+.tbl-cell-input {
+  width: 100%;
+  height: 31px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 0.82rem;
+  color: #0f172a;
+  outline: none;
+  box-sizing: border-box;
+  transition: all 0.15s ease;
+}
+
+.tbl-cell-input:hover {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+.tbl-cell-input:focus {
+  border-color: #3b82f6;
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.tbl-cell-select {
+  width: 100%;
+  height: 31px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 0.82rem;
+  color: #0f172a;
+  outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: all 0.15s ease;
+}
+
+.tbl-cell-select:hover {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+.tbl-cell-select:focus {
+  border-color: #3b82f6;
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.tbl-sku-badge {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  display: inline-block;
+}
+
+.tbl-qty-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tbl-qty-input {
+  width: 48px;
+  height: 29px;
+  text-align: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.tbl-qty-input:focus {
+  border-color: #2563eb;
+}
+
+.tbl-row-amount {
+  font-weight: 800;
+  color: #0f172a;
+  font-size: 0.88rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tbl-remove-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.tbl-remove-btn:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.table-empty-row {
+  text-align: center;
+  padding: 36px 16px !important;
+  color: #64748b;
+}
+
+.table-empty-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   3. BOTTOM BILLING SECTION (2 COLUMNS: LEFT PAYMENT & TERMS, RIGHT TOTALS)
+   -------------------------------------------------------------------------- */
+.billing-bottom-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 992px) {
+  .billing-bottom-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Left Card: Payment, Terms, Notes */
+.billing-bottom-left-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bottom-section-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 5px;
+}
+
+.payment-type-pills {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .payment-type-pills {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pay-pill-btn {
+  border: 1.5px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.pay-pill-btn:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.pay-pill-btn.active {
+  background: #eff6ff;
+  border-color: #2563eb;
+  color: #1d4ed8;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.15);
+}
+
+.pay-pill-btn.pill-account.active {
+  background: #fffbeb;
+  border-color: #f59e0b;
+  color: #b45309;
+  box-shadow: 0 1px 3px rgba(245, 158, 11, 0.2);
+}
+
+.account-mode-hint {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #fffbeb;
+  border: 1px dashed #fcd34d;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #b45309;
+  line-height: 1.35;
+}
+
+.notes-section-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.bottom-textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  color: #0f172a;
+  outline: none;
+  resize: vertical;
+  line-height: 1.45;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bottom-textarea.notes-textarea-full {
+  min-height: 95px;
+  flex: 1;
+}
+
+.bottom-textarea:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* Right Card: Totals Calculation Summary */
+.billing-bottom-right-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  padding: 14px 18px;
+}
+
+.summary-rows-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.summary-calc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.86rem;
+  color: #475569;
+}
+
+.summary-calc-row strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.summary-calc-row.round-off-row {
+  background: #f8fafc;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px dashed #cbd5e1;
+  margin: 2px 0;
+}
+
+.round-off-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+
+/* Grand Total Box */
+.grand-total-highlight-box {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 10px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+}
+
+.gt-box-label {
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #cbd5e1;
+}
+
+.gt-box-value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #38bdf8;
+  letter-spacing: -0.02em;
+}
+
+/* Received & Balance Due Grid */
+.received-balance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.rb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rb-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.rb-input {
+  height: 35px;
+  background: #ffffff;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #0f172a;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.rb-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.rb-status-badge {
+  height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 0.94rem;
+  font-weight: 800;
+  box-sizing: border-box;
+}
+
+.rb-status-badge.change {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+.rb-status-badge.due {
+  background: #fff7ed;
+  color: #ea580c;
+  border: 1px solid #fed7aa;
+}
+
+.rb-status-badge.account-due {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+/* --------------------------------------------------------------------------
+   4. COMPACT STICKY BOTTOM ACTION BAR (NO OVERFLOW, NO FLOATING WHITE LINE)
+   -------------------------------------------------------------------------- */
+.billing-fixed-bottom-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  height: 52px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 50;
+  box-sizing: border-box;
+}
+
+.bar-summary-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.bar-stat-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+.bar-stat-chip strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.bar-grand-preview {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #1d4ed8;
+  background: #eff6ff;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid #bfdbfe;
+}
+
+.bar-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-bar-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-bar-secondary:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.btn-save-print-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+  transition: all 0.15s ease;
+}
+
+.btn-save-print-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-save-print-primary:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}

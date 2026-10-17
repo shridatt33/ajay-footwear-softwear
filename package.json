@@ -1,0 +1,61 @@
+{
+  "name": "ajay-fw-application",
+  "description": "Swamidatt Footwear Management & Billing System",
+  "version": "1.0.0",
+  "private": true,
+  "author": "Ajay FW Application",
+  "main": "electron/main.js",
+  "scripts": {
+    "frontend": "npm --prefix frontend run dev",
+    "electron": "electron .",
+    "dist": "npm --prefix frontend run build && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.7.4",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.swamidatt.footwear",
+    "productName": "Swamidatt Footwear",
+    "artifactName": "Swamidatt Footwear Setup ${version}.${ext}",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "build/**/*",
+      "package.json",
+      "!**/.DS_Store"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "build/Swamidatt_Agency.ico",
+      "target": {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    },
+    "nsis": {
+      "installerIcon": "build/Swamidatt_Agency.ico",
+      "uninstallerIcon": "build/Swamidatt_Agency.ico",
+      "installerHeaderIcon": "build/Swamidatt_Agency.ico",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Swamidatt Footwear"
+    }
+  }
+}
