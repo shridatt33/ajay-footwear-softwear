@@ -133,6 +133,11 @@ export function AuthProvider({ children }) {
     setIsAuthenticated(false)
   }
 
+  const refreshSession = useCallback(() => {
+    const activeToken = token || sessionStorage.getItem(TOKEN_STORAGE_KEY)
+    return verifySession(activeToken)
+  }, [token, verifySession])
+
   const value = {
     user,
     token,
@@ -140,6 +145,7 @@ export function AuthProvider({ children }) {
     isLoading,
     login,
     logout,
+    refreshSession,
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

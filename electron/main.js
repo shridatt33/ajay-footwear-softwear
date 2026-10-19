@@ -9,7 +9,7 @@ const INVOICES_DIR = path.join(__dirname, "..", "invoices");
 if (!fs.existsSync(INVOICES_DIR)) {
   try {
     fs.mkdirSync(INVOICES_DIR, { recursive: true });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // Load JsBarcode script for offline vector barcode generation inside print windows
@@ -31,8 +31,8 @@ try {
 const SHOP_METADATA = {
   name: "SWAMIDATT FOOTWEAR",
   tagline: "Retail Footwear & Accessories",
-  address: "Main Road, Near Bus Stand, Market Yard, Maharashtra 413501",
-  phone: "+91 98765 43210",
+  address: "Wadgaon Aanad Alefhata Tal junner Dist pune",
+  phone: "+91 7020466300",
   gst: "27AABCS1429B1Z5",
   currency: "₹",
 };
@@ -160,10 +160,10 @@ function generateInvoiceHtml(bill, printType = "a4") {
     </thead>
     <tbody>
       ${items.map((it) => {
-        const rate = Number(it.selling_price ?? it.price ?? 0);
-        const qty = Number(it.quantity ?? 1);
-        const total = Number(it.total_price ?? rate * qty ?? 0);
-        return `
+      const rate = Number(it.selling_price ?? it.price ?? 0);
+      const qty = Number(it.quantity ?? 1);
+      const total = Number(it.total_price ?? rate * qty ?? 0);
+      return `
           <tr>
             <td>
               <div class="bold">${escapeXml(it.product_name)}</div>
@@ -174,7 +174,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
             <td style="text-align: right;" class="bold">₹${total.toFixed(2)}</td>
           </tr>
         `;
-      }).join("")}
+    }).join("")}
     </tbody>
   </table>
 
@@ -426,10 +426,10 @@ function generateInvoiceHtml(bill, printType = "a4") {
     </thead>
     <tbody>
       ${items.map((it, idx) => {
-        const rate = Number(it.selling_price ?? it.price ?? 0);
-        const qty = Number(it.quantity ?? 1);
-        const total = Number(it.total_price ?? rate * qty ?? 0);
-        return `
+    const rate = Number(it.selling_price ?? it.price ?? 0);
+    const qty = Number(it.quantity ?? 1);
+    const total = Number(it.total_price ?? rate * qty ?? 0);
+    return `
           <tr>
             <td style="text-align: center;">${idx + 1}</td>
             <td>
@@ -442,7 +442,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
             <td style="text-align: right; font-weight: bold;">${total.toFixed(2)}</td>
           </tr>
         `;
-      }).join("")}
+  }).join("")}
     </tbody>
   </table>
 
@@ -574,7 +574,7 @@ ipcMain.handle("print-invoice", async (event, options = {}) => {
           return true;
         })()
       `);
-    } catch (_) {}
+    } catch (_) { }
 
     const printOptions = {
       silent: Boolean(options.silent),
@@ -612,7 +612,7 @@ ipcMain.handle("print-invoice", async (event, options = {}) => {
       setTimeout(() => {
         try {
           if (!printWindow.isDestroyed()) printWindow.close();
-        } catch (_) {}
+        } catch (_) { }
       }, 1500);
     }
   }
@@ -692,7 +692,7 @@ ipcMain.handle("print-to-pdf", async (event, options = {}) => {
           return true;
         })()
       `);
-    } catch (_) {}
+    } catch (_) { }
 
     const pdfBuffer = await printWindow.webContents.printToPDF({
       printBackground: true,
@@ -709,7 +709,7 @@ ipcMain.handle("print-to-pdf", async (event, options = {}) => {
     if (printWindow && !printWindow.isDestroyed()) {
       try {
         printWindow.close();
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 });
@@ -740,7 +740,7 @@ app.name = "swamidatt-footwear";
 try {
   const userDataPath = path.join(app.getPath("appData"), "swamidatt-footwear");
   app.setPath("userData", userDataPath);
-} catch (_) {}
+} catch (_) { }
 
 // Ensure only a single instance of the application runs
 const gotTheLock = app.requestSingleInstanceLock();
@@ -871,7 +871,7 @@ function getAppIconPath() {
       if (fs.existsSync(candidate)) {
         return candidate;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return undefined;
 }

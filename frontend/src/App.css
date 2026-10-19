@@ -69,17 +69,28 @@
   padding: 0;
 }
 
-html, body, #root {
-  height: 100vh;
-  width: 100vw;
+html {
+  min-height: 100%;
+  overflow-y: auto;
+}
+
+body {
+  min-height: 100%;
   margin: 0;
   padding: 0;
-  overflow: hidden; /* Global scroll lock: ONLY .page-content scrolls */
+  overflow-x: hidden;
+  overflow-y: auto;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background-color: var(--bg-page);
   color: var(--text-main);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+  width: 100%;
+  overflow: visible;
 }
 
 button, input, select, textarea {

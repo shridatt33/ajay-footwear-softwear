@@ -114,12 +114,12 @@ export default function CategoriesPage() {
   }
 
   const handleDelete = async (catId, name) => {
-    if (!window.confirm(`Delete or deactivate category "${name}"?`)) return
+    if (!window.confirm(`Are you sure you want to delete category "${name}"?`)) return
     try {
       const res = await fetch(`${API_BASE_URL}/categories/${catId}`, { method: 'DELETE' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.message || 'Delete failed')
-      setAlertMsg({ type: 'info', text: data.message })
+      setAlertMsg({ type: 'success', text: data.message })
       loadCategories()
     } catch (err) {
       setAlertMsg({ type: 'error', text: err.message || 'Delete failed.' })

@@ -2,9 +2,15 @@ import os
 import random
 import base64
 import secrets
+import collections
+import functools
+import json
+import platform
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import psycopg
@@ -17,6 +23,12 @@ CORS(app)
 
 INVOICES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "invoices"))
 os.makedirs(INVOICES_DIR, exist_ok=True)
+
+BACKUPS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "backups"))
+os.makedirs(BACKUPS_DIR, exist_ok=True)
+
+SERVER_START_TIME = datetime.now(timezone.utc)
+RECENT_SYSTEM_ERRORS = collections.deque(maxlen=100)
 
 LOW_STOCK_THRESHOLD = 5
 DEFAULT_SIZES = list(range(1, 16))
@@ -356,6 +368,77 @@ def ensure_database_schema():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions (token);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions (expires_at);")
 
+            # Extended Shop Account & Billing Status Schema Migrations
+            cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;")
+            cur.execute("ALTER TABLE users ADD CONSTRAINT users_status_check CHECK (status IN ('active', 'inactive', 'archived'));")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS shop_name VARCHAR(200);")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS billing_status VARCHAR(20) NOT NULL DEFAULT 'active';")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50);")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(200);")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS gst_number VARCHAR(50);")
+            cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_billing_status_check;")
+            cur.execute("ALTER TABLE users ADD CONSTRAINT users_billing_status_check CHECK (billing_status IN ('active', 'suspended'));")
+
+            cur.execute("UPDATE users SET shop_name = 'SWAMIDATT FOOTWEAR - Main Branch' WHERE shop_name IS NULL AND role != 'developer_super_admin';")
+            cur.execute("UPDATE users SET shop_name = 'System Control Operations' WHERE shop_name IS NULL AND role = 'developer_super_admin';")
+
+            cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+            cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS shop_name VARCHAR(200);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_bills_user_id ON bills (user_id);")
+            cur.execute("UPDATE bills SET shop_name = 'SWAMIDATT FOOTWEAR - Main Branch' WHERE shop_name IS NULL;")
+
+            # 11. Developer Security Audit Logs
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS developer_audit_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    username VARCHAR(100),
+                    action VARCHAR(100) NOT NULL,
+                    details TEXT,
+                    ip_address VARCHAR(50),
+                    status VARCHAR(20) DEFAULT 'success',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_dev_audit_created_at ON developer_audit_logs (created_at DESC);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_dev_audit_action ON developer_audit_logs (action);")
+
+            # 12. Login Attempts Tracking (for Rate Limiting & Account Lockout)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS login_attempts (
+                    id SERIAL PRIMARY KEY,
+                    ip_address VARCHAR(50),
+                    username VARCHAR(100),
+                    attempt_type VARCHAR(50) DEFAULT 'shop',
+                    success BOOLEAN NOT NULL DEFAULT FALSE,
+                    attempt_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts (username, attempt_type, attempt_time DESC);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts (ip_address, attempt_type, attempt_time DESC);")
+
+            # 13. System Database Backups Tracking
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_backups (
+                    id SERIAL PRIMARY KEY,
+                    filename VARCHAR(255) NOT NULL UNIQUE,
+                    file_size_bytes BIGINT NOT NULL DEFAULT 0,
+                    backup_type VARCHAR(50) NOT NULL DEFAULT 'manual',
+                    status VARCHAR(50) NOT NULL DEFAULT 'completed',
+                    error_message TEXT,
+                    created_by VARCHAR(100),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_system_backups_created_at ON system_backups (created_at DESC);")
+
             # Seed initial administrator and store accounts if no users exist
             cur.execute("SELECT COUNT(*) FROM users;")
             user_count = cur.fetchone()[0]
@@ -569,12 +652,157 @@ def health():
 
 
 # ==========================================
-# AUTHENTICATION API
 # ==========================================
+# AUTHENTICATION API (SHOP & TERMINAL)
+# ==========================================
+
+def get_client_ip():
+    """Extract real client IP considering forward headers if present."""
+    if request.headers.get("X-Forwarded-For"):
+        return request.headers.get("X-Forwarded-For").split(",")[0].strip()
+    return request.remote_addr or "127.0.0.1"
+
+
+def record_audit_log(action, user_id=None, username=None, details=None, ip_address=None, status="success"):
+    """Persist an audit log entry for security and administrative actions."""
+    try:
+        ip = ip_address or get_client_ip()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO developer_audit_logs (user_id, username, action, details, ip_address, status)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                    """,
+                    (user_id, username, action, details, ip, status)
+                )
+                conn.commit()
+    except Exception as e:
+        print(f"[AUDIT LOG ERROR] Failed to record audit log: {e}")
+
+
+def record_login_attempt(username, ip_address, attempt_type, success):
+    """Record an authentication attempt for rate limiting and lockout enforcement."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO login_attempts (ip_address, username, attempt_type, success)
+                    VALUES (%s, %s, %s, %s);
+                    """,
+                    (ip_address, username, attempt_type, success)
+                )
+                conn.commit()
+    except Exception as e:
+        print(f"[LOGIN ATTEMPT ERROR] Failed to record login attempt: {e}")
+
+
+def check_developer_rate_limit(username, ip_address):
+    """
+    Enforces rate limiting and account lockout.
+    Blocks if 5 or more failed developer login attempts occurred within the past 15 minutes.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM login_attempts
+                    WHERE (LOWER(username) = LOWER(%s) OR ip_address = %s)
+                      AND attempt_type = 'developer'
+                      AND success = FALSE
+                      AND attempt_time > NOW() - INTERVAL '15 minutes';
+                    """,
+                    (username, ip_address)
+                )
+                failed_count = cur.fetchone()[0]
+                if failed_count >= 5:
+                    return False, "Too many failed attempts. Developer access is temporarily locked for 15 minutes."
+                return True, ""
+    except Exception as e:
+        print(f"[RATE LIMIT ERROR] {e}")
+        return True, ""
+
+
+def developer_required(f):
+    """
+    Enforces server-side Role-Based Access Control (RBAC).
+    Guarantees only active users with role == 'developer_super_admin' can access endpoints.
+    Returns 401 for unauthenticated requests and 403 for unauthorized users (including shop users).
+    """
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif request.headers.get("X-Auth-Token"):
+            token = request.headers.get("X-Auth-Token").strip()
+
+        if not token:
+            return jsonify({"success": False, "message": "Authentication required. Missing developer session token."}), 401
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.token, s.expires_at, u.id, u.username, u.full_name, u.role, u.status
+                    FROM user_sessions s
+                    JOIN users u ON s.user_id = u.id
+                    WHERE s.token = %s;
+                    """,
+                    (token,)
+                )
+                row = cur.fetchone()
+
+                if not row:
+                    return jsonify({"success": False, "message": "Invalid or expired developer session. Please log in again."}), 401
+
+                s_token, s_expires, u_id, u_username, u_name, u_role, u_status = row
+
+                now_utc = datetime.now(timezone.utc)
+                if s_expires < now_utc:
+                    cur.execute("DELETE FROM user_sessions WHERE token = %s;", (token,))
+                    conn.commit()
+                    return jsonify({"success": False, "message": "Developer session has expired. Please log in again."}), 401
+
+                if u_status != "active":
+                    return jsonify({"success": False, "message": "Developer account is inactive or disabled."}), 403
+
+                # CRITICAL RBAC CHECK: role must be developer_super_admin
+                if u_role != "developer_super_admin":
+                    record_audit_log(
+                        action="UNAUTHORIZED_DEV_ENDPOINT_ACCESS",
+                        user_id=u_id,
+                        username=u_username,
+                        details=f"User with role '{u_role}' attempted to access developer endpoint {request.path}",
+                        ip_address=get_client_ip(),
+                        status="blocked"
+                    )
+                    return jsonify({
+                        "success": False,
+                        "message": "Access forbidden: Developer Super Admin privileges required."
+                    }), 403
+
+                # Touch active session
+                cur.execute("UPDATE user_sessions SET last_active_at = NOW() WHERE token = %s;", (token,))
+                conn.commit()
+
+        current_dev_user = {
+            "id": u_id,
+            "username": u_username,
+            "full_name": u_name,
+            "role": u_role
+        }
+        return f(current_user=current_dev_user, *args, **kwargs)
+    return decorated_function
 
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
+    client_ip = get_client_ip()
     try:
         data = request.get_json(silent=True) or {}
         username = str(data.get("username", "")).strip()
@@ -591,7 +819,7 @@ def auth_login():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, username, password_hash, full_name, role, status
+                    SELECT id, username, password_hash, full_name, role, status, shop_name, billing_status
                     FROM users
                     WHERE LOWER(username) = LOWER(%s);
                     """,
@@ -600,14 +828,40 @@ def auth_login():
                 user_row = cur.fetchone()
 
                 if not user_row:
+                    record_login_attempt(username, client_ip, "shop", False)
                     return jsonify({"success": False, "message": "Invalid username or password."}), 401
 
-                u_id, u_username, u_hash, u_name, u_role, u_status = user_row
+                u_id, u_username, u_hash, u_name, u_role, u_status, u_shop_name, u_billing_status = user_row
+
+                # Prevent developer account from logging in via standard shop login
+                if u_role == "developer_super_admin":
+                    record_login_attempt(username, client_ip, "shop", False)
+                    record_audit_log(
+                        action="SHOP_LOGIN_BLOCKED_FOR_DEV",
+                        user_id=u_id,
+                        username=u_username,
+                        details="Developer attempted login via standard shop login",
+                        ip_address=client_ip,
+                        status="blocked"
+                    )
+                    return jsonify({
+                        "success": False,
+                        "message": "Developer accounts cannot log in through the shop terminal. Please use the developer portal."
+                    }), 403
+
+                if u_status == "archived":
+                    record_login_attempt(username, client_ip, "shop", False)
+                    return jsonify({
+                        "success": False,
+                        "message": "This shop account has been archived. Access is restricted under compliance retention policy."
+                    }), 403
 
                 if u_status != "active":
+                    record_login_attempt(username, client_ip, "shop", False)
                     return jsonify({"success": False, "message": "This account is inactive. Please contact store manager."}), 403
 
                 if not check_password_hash(u_hash, password):
+                    record_login_attempt(username, client_ip, "shop", False)
                     return jsonify({"success": False, "message": "Invalid username or password."}), 401
 
                 session_token = secrets.token_hex(32)
@@ -622,6 +876,8 @@ def auth_login():
                 )
                 conn.commit()
 
+                record_login_attempt(username, client_ip, "shop", True)
+
         return jsonify({
             "success": True,
             "token": session_token,
@@ -629,11 +885,19 @@ def auth_login():
                 "id": u_id,
                 "username": u_username,
                 "full_name": u_name,
-                "role": u_role
+                "role": u_role,
+                "shop_name": u_shop_name or "SWAMIDATT FOOTWEAR - Main Branch",
+                "billing_status": u_billing_status or "active"
             },
             "message": "Login successful"
         }), 200
     except Exception as e:
+        RECENT_SYSTEM_ERRORS.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+            "endpoint": "/api/auth/login",
+            "method": "POST"
+        })
         return jsonify({"success": False, "message": f"Authentication server error: {str(e)}"}), 500
 
 
@@ -654,7 +918,7 @@ def auth_me():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT s.token, s.expires_at, u.id, u.username, u.full_name, u.role, u.status
+                    SELECT s.token, s.expires_at, u.id, u.username, u.full_name, u.role, u.status, u.shop_name, u.billing_status
                     FROM user_sessions s
                     JOIN users u ON s.user_id = u.id
                     WHERE s.token = %s;
@@ -666,13 +930,16 @@ def auth_me():
                 if not row:
                     return jsonify({"authenticated": False, "message": "Session not found."}), 401
 
-                s_token, s_expires, u_id, u_username, u_name, u_role, u_status = row
+                s_token, s_expires, u_id, u_username, u_name, u_role, u_status, u_shop_name, u_billing_status = row
 
                 now_utc = datetime.now(timezone.utc)
                 if s_expires < now_utc:
                     cur.execute("DELETE FROM user_sessions WHERE token = %s;", (token,))
                     conn.commit()
                     return jsonify({"authenticated": False, "message": "Session expired. Please log in again."}), 401
+
+                if u_status == "archived":
+                    return jsonify({"authenticated": False, "message": "This shop account has been archived."}), 403
 
                 if u_status != "active":
                     return jsonify({"authenticated": False, "message": "Account deactivated."}), 403
@@ -686,7 +953,9 @@ def auth_me():
                 "id": u_id,
                 "username": u_username,
                 "full_name": u_name,
-                "role": u_role
+                "role": u_role,
+                "shop_name": u_shop_name or "SWAMIDATT FOOTWEAR - Main Branch",
+                "billing_status": u_billing_status or "active"
             }
         }), 200
     except Exception as e:
@@ -712,6 +981,1340 @@ def auth_logout():
         return jsonify({"success": True, "message": "Logged out successfully"}), 200
     except Exception as e:
         return jsonify({"success": False, "message": f"Logout error: {str(e)}"}), 500
+
+
+# ==========================================
+# DEVELOPER SUPER ADMIN API ENDPOINTS
+# ==========================================
+
+@app.route("/api/developer/auth/login", methods=["POST"])
+def developer_auth_login():
+    """
+    Dedicated developer authentication endpoint.
+    Enforces rate limiting, role validation, session generation, and security auditing.
+    """
+    client_ip = get_client_ip()
+    try:
+        data = request.get_json(silent=True) or {}
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", "")).strip()
+
+        if not username or not password:
+            return jsonify({"success": False, "message": "Developer username and password are required."}), 400
+
+        # Rate Limiting & Account Lockout check
+        allowed, lockout_msg = check_developer_rate_limit(username, client_ip)
+        if not allowed:
+            record_audit_log(
+                action="DEVELOPER_LOGIN_RATE_LIMITED",
+                username=username,
+                details=f"Rate limit triggered from IP {client_ip}",
+                ip_address=client_ip,
+                status="blocked"
+            )
+            return jsonify({"success": False, "message": lockout_msg}), 429
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, username, password_hash, full_name, role, status
+                    FROM users
+                    WHERE LOWER(username) = LOWER(%s);
+                    """,
+                    (username,)
+                )
+                user_row = cur.fetchone()
+
+                if not user_row:
+                    record_login_attempt(username, client_ip, "developer", False)
+                    record_audit_log(
+                        action="DEVELOPER_LOGIN_FAILED",
+                        username=username,
+                        details="Username not found",
+                        ip_address=client_ip,
+                        status="failed"
+                    )
+                    return jsonify({"success": False, "message": "Invalid developer credentials."}), 401
+
+                u_id, u_username, u_hash, u_name, u_role, u_status = user_row
+
+                if not check_password_hash(u_hash, password):
+                    record_login_attempt(username, client_ip, "developer", False)
+                    record_audit_log(
+                        action="DEVELOPER_LOGIN_FAILED",
+                        user_id=u_id,
+                        username=u_username,
+                        details="Password mismatch",
+                        ip_address=client_ip,
+                        status="failed"
+                    )
+                    return jsonify({"success": False, "message": "Invalid developer credentials."}), 401
+
+                if u_role != "developer_super_admin":
+                    record_login_attempt(username, client_ip, "developer", False)
+                    record_audit_log(
+                        action="DEVELOPER_LOGIN_DENIED_ROLE",
+                        user_id=u_id,
+                        username=u_username,
+                        details=f"Account has role '{u_role}', not 'developer_super_admin'",
+                        ip_address=client_ip,
+                        status="blocked"
+                    )
+                    return jsonify({
+                        "success": False,
+                        "message": "Access denied: Account does not have Developer Super Admin privileges."
+                    }), 403
+
+                if u_status != "active":
+                    record_login_attempt(username, client_ip, "developer", False)
+                    record_audit_log(
+                        action="DEVELOPER_LOGIN_INACTIVE",
+                        user_id=u_id,
+                        username=u_username,
+                        details="Developer account is inactive",
+                        ip_address=client_ip,
+                        status="blocked"
+                    )
+                    return jsonify({"success": False, "message": "Developer account is deactivated."}), 403
+
+                # Successful login: 8 hours session duration
+                session_token = secrets.token_hex(48)
+                expires_at = datetime.now(timezone.utc) + timedelta(hours=8)
+
+                cur.execute(
+                    """
+                    INSERT INTO user_sessions (token, user_id, expires_at, last_active_at)
+                    VALUES (%s, %s, %s, NOW());
+                    """,
+                    (session_token, u_id, expires_at)
+                )
+                conn.commit()
+
+                record_login_attempt(username, client_ip, "developer", True)
+                record_audit_log(
+                    action="DEVELOPER_LOGIN_SUCCESS",
+                    user_id=u_id,
+                    username=u_username,
+                    details="Developer Super Admin authenticated successfully",
+                    ip_address=client_ip,
+                    status="success"
+                )
+
+        return jsonify({
+            "success": True,
+            "token": session_token,
+            "user": {
+                "id": u_id,
+                "username": u_username,
+                "full_name": u_name,
+                "role": u_role
+            },
+            "message": "Developer Super Admin authenticated"
+        }), 200
+    except Exception as e:
+        RECENT_SYSTEM_ERRORS.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+            "endpoint": "/api/developer/auth/login",
+            "method": "POST"
+        })
+        return jsonify({"success": False, "message": f"Developer auth error: {str(e)}"}), 500
+
+
+@app.route("/api/developer/auth/me", methods=["GET"])
+@developer_required
+def developer_auth_me(current_user):
+    """Verify active developer session."""
+    return jsonify({
+        "authenticated": True,
+        "user": current_user
+    }), 200
+
+
+@app.route("/api/developer/auth/logout", methods=["POST"])
+@developer_required
+def developer_auth_logout(current_user):
+    """Invalidate developer session and record audit event."""
+    try:
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else request.headers.get("X-Auth-Token", "").strip()
+
+        if token:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM user_sessions WHERE token = %s;", (token,))
+                    conn.commit()
+
+        record_audit_log(
+            action="DEVELOPER_LOGOUT",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details="Developer session ended via logout",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+        return jsonify({"success": True, "message": "Developer session terminated successfully."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Logout error: {str(e)}"}), 500
+
+
+@app.route("/api/developer/overview", methods=["GET"])
+@developer_required
+def developer_overview(current_user):
+    """
+    Returns authentic system metrics, PostgreSQL telemetry, user statistics,
+    recent audit activity, and real backup status.
+    """
+    try:
+        uptime_seconds = int((datetime.now(timezone.utc) - SERVER_START_TIME).total_seconds())
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # 1. PostgreSQL Version & DB Size
+                cur.execute("SELECT version();")
+                pg_version_raw = cur.fetchone()[0]
+                pg_version_short = pg_version_raw.split(",")[0] if pg_version_raw else "PostgreSQL"
+
+                cur.execute("SELECT pg_database_size('ajay_footwear');")
+                db_size_bytes = cur.fetchone()[0] or 0
+                db_size_mb = round(db_size_bytes / (1024 * 1024), 2)
+
+                # 2. Database Connection Count
+                cur.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = 'ajay_footwear';")
+                active_db_connections = cur.fetchone()[0] or 1
+
+                # 3. Shop Users Breakdown
+                cur.execute(
+                    """
+                    SELECT 
+                        COUNT(*) FILTER (WHERE role != 'developer_super_admin') AS total_shop_users,
+                        COUNT(*) FILTER (WHERE role != 'developer_super_admin' AND status = 'active') AS active_shop_users,
+                        COUNT(*) FILTER (WHERE role != 'developer_super_admin' AND status = 'inactive') AS inactive_shop_users,
+                        COUNT(*) FILTER (WHERE role = 'developer_super_admin') AS dev_users
+                    FROM users;
+                    """
+                )
+                u_stats = cur.fetchone()
+                total_shop_users = u_stats[0] or 0
+                active_shop_users = u_stats[1] or 0
+                inactive_shop_users = u_stats[2] or 0
+                dev_users_count = u_stats[3] or 0
+
+                # 4. Core Shop Telemetry
+                cur.execute("SELECT COUNT(*) FROM products;")
+                total_products = cur.fetchone()[0] or 0
+
+                cur.execute("SELECT COALESCE(SUM(stock_quantity), 0) FROM product_sizes;")
+                total_stock_units = cur.fetchone()[0] or 0
+
+                cur.execute("SELECT COUNT(*) FROM bills;")
+                total_bills = cur.fetchone()[0] or 0
+
+                cur.execute("SELECT COUNT(*) FROM customers;")
+                total_customers = cur.fetchone()[0] or 0
+
+                # 5. Recent Login Activity (Real login attempts)
+                cur.execute(
+                    """
+                    SELECT username, ip_address, attempt_type, success, attempt_time
+                    FROM login_attempts
+                    ORDER BY attempt_time DESC
+                    LIMIT 8;
+                    """
+                )
+                recent_logins = [
+                    {
+                        "username": row[0],
+                        "ip_address": row[1],
+                        "attempt_type": row[2],
+                        "success": bool(row[3]),
+                        "time": normalize_datetime(row[4])
+                    }
+                    for row in cur.fetchall()
+                ]
+
+                # 6. Last Successful Backup
+                cur.execute(
+                    """
+                    SELECT filename, file_size_bytes, backup_type, status, created_at
+                    FROM system_backups
+                    WHERE status = 'completed'
+                    ORDER BY created_at DESC
+                    LIMIT 1;
+                    """
+                )
+                last_backup_row = cur.fetchone()
+                last_backup = None
+                if last_backup_row:
+                    last_backup = {
+                        "filename": last_backup_row[0],
+                        "size_mb": round((last_backup_row[1] or 0) / (1024 * 1024), 2),
+                        "type": last_backup_row[2],
+                        "status": last_backup_row[3],
+                        "created_at": normalize_datetime(last_backup_row[4])
+                    }
+
+        return jsonify({
+            "success": True,
+            "application": {
+                "name": "SWAMIDATT FOOTWEAR ERP & POS",
+                "status": "Operational",
+                "version": "1.2.0",
+                "started_at": SERVER_START_TIME.isoformat(),
+                "uptime_seconds": uptime_seconds,
+                "uptime_formatted": f"{uptime_seconds // 3600}h {(uptime_seconds % 3600) // 60}m {uptime_seconds % 60}s"
+            },
+            "database": {
+                "status": "Connected",
+                "engine": "PostgreSQL",
+                "version": pg_version_short,
+                "database_name": "ajay_footwear",
+                "size_mb": db_size_mb,
+                "active_connections": active_db_connections
+            },
+            "users": {
+                "total_shop_users": total_shop_users,
+                "active_shop_users": active_shop_users,
+                "inactive_shop_users": inactive_shop_users,
+                "developer_super_admins": dev_users_count
+            },
+            "store_metrics": {
+                "products": total_products,
+                "stock_units": total_stock_units,
+                "bills": total_bills,
+                "customers": total_customers
+            },
+            "recent_logins": recent_logins,
+            "recent_errors": list(RECENT_SYSTEM_ERRORS)[-5:],
+            "last_backup": last_backup
+        }), 200
+    except Exception as e:
+        RECENT_SYSTEM_ERRORS.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+            "endpoint": "/api/developer/overview",
+            "method": "GET"
+        })
+        return jsonify({"success": False, "message": f"Overview query failed: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users", methods=["GET"])
+@developer_required
+def developer_get_users(current_user):
+    """
+    Returns full list of shop and user accounts with shop_name, username, role,
+    account status, billing status, creation date, last login, active sessions,
+    and total bills. Plaintext passwords or hashes are NEVER exposed.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 
+                        u.id, 
+                        u.username, 
+                        COALESCE(u.shop_name, 'SWAMIDATT FOOTWEAR - Main Branch') AS shop_name,
+                        u.full_name, 
+                        COALESCE(u.phone, '') AS phone,
+                        COALESCE(u.email, '') AS email,
+                        COALESCE(u.address, '') AS address,
+                        COALESCE(u.gst_number, '') AS gst_number,
+                        u.role, 
+                        u.status, 
+                        COALESCE(u.billing_status, 'active') AS billing_status,
+                        u.created_at, 
+                        u.updated_at,
+                        (SELECT COUNT(*) FROM user_sessions s WHERE s.user_id = u.id AND s.expires_at > NOW()) AS active_sessions,
+                        (SELECT MAX(s.last_active_at) FROM user_sessions s WHERE s.user_id = u.id) AS last_active,
+                        (SELECT COUNT(*) FROM bills b WHERE b.user_id = u.id) AS total_bills
+                    FROM users u
+                    ORDER BY 
+                        CASE WHEN u.role = 'developer_super_admin' THEN 0 ELSE 1 END,
+                        u.id ASC;
+                    """
+                )
+                users = []
+                for row in cur.fetchall():
+                    users.append({
+                        "id": row[0],
+                        "username": row[1],
+                        "shop_name": row[2],
+                        "full_name": row[3],
+                        "phone": row[4],
+                        "email": row[5],
+                        "address": row[6],
+                        "gst_number": row[7],
+                        "role": row[8],
+                        "status": row[9],
+                        "billing_status": row[10],
+                        "created_at": normalize_datetime(row[11]),
+                        "updated_at": normalize_datetime(row[12]),
+                        "active_sessions": int(row[13] or 0),
+                        "last_active": normalize_datetime(row[14]),
+                        "total_bills": int(row[15] or 0)
+                    })
+
+        return jsonify({"success": True, "users": users}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to load accounts: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users", methods=["POST"])
+@developer_required
+def developer_create_user(current_user):
+    """
+    Allows Developer Super Admin to create a new shop account with credentials,
+    shop name, address, contact details, and role.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        username = str(payload.get("username", "")).strip()
+        shop_name = str(payload.get("shop_name", "")).strip()
+        full_name = str(payload.get("full_name", "")).strip()
+        password = str(payload.get("password", "")).strip()
+        role = str(payload.get("role", "Admin")).strip()
+        phone = str(payload.get("phone", "")).strip()
+        email = str(payload.get("email", "")).strip()
+        address = str(payload.get("address", "")).strip()
+        gst_number = str(payload.get("gst_number", "")).strip()
+
+        if not username:
+            return jsonify({"success": False, "message": "Username is required."}), 400
+        if len(username) < 3:
+            return jsonify({"success": False, "message": "Username must be at least 3 characters."}), 400
+        if not shop_name:
+            shop_name = f"{username.capitalize()} Store"
+        if not full_name:
+            full_name = shop_name
+        if not password or len(password) < 6:
+            return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+
+        valid_roles = ("Admin", "Manager", "Cashier", "developer_super_admin")
+        if role not in valid_roles:
+            return jsonify({"success": False, "message": f"Invalid role. Choose from {', '.join(valid_roles)}"}), 400
+
+        password_hash = generate_password_hash(password)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM users WHERE LOWER(username) = LOWER(%s);", (username,))
+                if cur.fetchone() is not None:
+                    return jsonify({"success": False, "message": f"Username '{username}' is already in use."}), 409
+
+                cur.execute(
+                    """
+                    INSERT INTO users (
+                        username, password_hash, full_name, role, status,
+                        shop_name, phone, email, address, gst_number, billing_status
+                    )
+                    VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s, 'active')
+                    RETURNING id;
+                    """,
+                    (username, password_hash, full_name, role, shop_name, phone, email, address, gst_number)
+                )
+                new_id = cur.fetchone()[0]
+                conn.commit()
+
+        record_audit_log(
+            action="SHOP_ACCOUNT_CREATED",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Created shop account '{shop_name}' (Username: {username}, ID: {new_id}, Role: {role})",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Shop account '{shop_name}' created successfully.",
+            "user_id": new_id
+        }), 201
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to create shop account: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users/<int:user_id>", methods=["PUT"])
+@developer_required
+def developer_update_shop_details(current_user, user_id):
+    """
+    Updates shop details (shop_name, full_name, phone, email, address, gst_number, role, status).
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        shop_name = str(payload.get("shop_name", "")).strip()
+        full_name = str(payload.get("full_name", "")).strip()
+        phone = str(payload.get("phone", "")).strip()
+        email = str(payload.get("email", "")).strip()
+        address = str(payload.get("address", "")).strip()
+        gst_number = str(payload.get("gst_number", "")).strip()
+        role = str(payload.get("role", "")).strip()
+        status = str(payload.get("status", "")).strip().lower()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, username, role, status, shop_name FROM users WHERE id = %s;", (user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"success": False, "message": "User not found."}), 404
+
+                t_id, t_username, t_role, t_status, t_shop_name = row
+
+                # Safety: prevent removing developer_super_admin role from developer
+                if t_role == "developer_super_admin" and role and role != "developer_super_admin":
+                    return jsonify({"success": False, "message": "Cannot demote a Developer Super Admin account."}), 400
+
+                update_fields = []
+                params = []
+
+                if shop_name:
+                    update_fields.append("shop_name = %s")
+                    params.append(shop_name)
+                if full_name:
+                    update_fields.append("full_name = %s")
+                    params.append(full_name)
+                if "phone" in payload:
+                    update_fields.append("phone = %s")
+                    params.append(phone)
+                if "email" in payload:
+                    update_fields.append("email = %s")
+                    params.append(email)
+                if "address" in payload:
+                    update_fields.append("address = %s")
+                    params.append(address)
+                if "gst_number" in payload:
+                    update_fields.append("gst_number = %s")
+                    params.append(gst_number)
+                if role and role in ("Admin", "Manager", "Cashier", "developer_super_admin"):
+                    update_fields.append("role = %s")
+                    params.append(role)
+                if status and status in ("active", "inactive", "archived"):
+                    if t_role == "developer_super_admin" and status != "active":
+                        return jsonify({"success": False, "message": "Developer Super Admin cannot be deactivated."}), 400
+                    update_fields.append("status = %s")
+                    params.append(status)
+                    if status != "active":
+                        cur.execute("DELETE FROM user_sessions WHERE user_id = %s;", (user_id,))
+
+                if not update_fields:
+                    return jsonify({"success": False, "message": "No valid fields provided for update."}), 400
+
+                update_fields.append("updated_at = NOW()")
+                params.append(user_id)
+
+                cur.execute(f"UPDATE users SET {', '.join(update_fields)} WHERE id = %s;", tuple(params))
+                conn.commit()
+
+        record_audit_log(
+            action="SHOP_DETAILS_UPDATED",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Updated shop details for '{t_username}' (ID: {user_id})",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        return jsonify({"success": True, "message": f"Shop details for '{t_username}' updated successfully."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to update shop details: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users/<int:user_id>/credentials", methods=["PUT"])
+@developer_required
+def developer_update_user_credentials(current_user, user_id):
+    """
+    Sets or resets credentials (username and/or password) for a shop account.
+    Hashes password securely and immediately revokes all existing sessions.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        new_username = str(payload.get("username", "")).strip()
+        new_password = str(payload.get("password", "")).strip()
+
+        if not new_username and not new_password:
+            return jsonify({"success": False, "message": "Please provide a new username or password."}), 400
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, username, role FROM users WHERE id = %s;", (user_id,))
+                target = cur.fetchone()
+                if not target:
+                    return jsonify({"success": False, "message": "User not found."}), 404
+
+                t_id, current_target_username, t_role = target
+
+                updates = []
+                params = []
+
+                if new_username and new_username.lower() != current_target_username.lower():
+                    if len(new_username) < 3:
+                        return jsonify({"success": False, "message": "Username must be at least 3 characters."}), 400
+                    cur.execute("SELECT 1 FROM users WHERE LOWER(username) = LOWER(%s) AND id != %s;", (new_username, user_id))
+                    if cur.fetchone() is not None:
+                        return jsonify({"success": False, "message": f"Username '{new_username}' is already taken."}), 409
+                    updates.append("username = %s")
+                    params.append(new_username)
+
+                if new_password:
+                    if len(new_password) < 6:
+                        return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+                    new_hash = generate_password_hash(new_password)
+                    updates.append("password_hash = %s")
+                    params.append(new_hash)
+
+                if updates:
+                    updates.append("updated_at = NOW()")
+                    params.append(user_id)
+                    cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s;", tuple(params))
+
+                # Immediately revoke all active sessions for security
+                cur.execute("DELETE FROM user_sessions WHERE user_id = %s;", (user_id,))
+                conn.commit()
+
+        record_audit_log(
+            action="SHOP_CREDENTIALS_RESET",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Reset login credentials for shop user '{current_target_username}' (ID: {user_id}). Active sessions revoked.",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Login credentials for user '{new_username or current_target_username}' updated successfully. All existing sessions were revoked."
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to update credentials: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users/<int:user_id>/billing-status", methods=["PUT"])
+@developer_required
+def developer_update_billing_status(current_user, user_id):
+    """
+    Sets shop billing status to 'active' or 'suspended'.
+    When suspended, revokes all active sessions immediately and prevents creating new invoices.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        new_billing_status = str(payload.get("billing_status", "")).strip().lower()
+
+        if new_billing_status not in ("active", "suspended"):
+            return jsonify({"success": False, "message": "Billing status must be 'active' or 'suspended'."}), 400
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, username, role, shop_name, billing_status FROM users WHERE id = %s;", (user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"success": False, "message": "Shop account not found."}), 404
+
+                t_id, t_username, t_role, t_shop_name, current_billing_status = row
+
+                # Prevent suspending developer super admin
+                if t_role == "developer_super_admin":
+                    return jsonify({"success": False, "message": "Developer Super Admin cannot be suspended from billing."}), 400
+
+                cur.execute(
+                    "UPDATE users SET billing_status = %s, updated_at = NOW() WHERE id = %s;",
+                    (new_billing_status, user_id)
+                )
+
+                # If suspended, purge sessions to force re-auth and ensure immediate policy enforcement
+                if new_billing_status == "suspended":
+                    cur.execute("DELETE FROM user_sessions WHERE user_id = %s;", (user_id,))
+
+                conn.commit()
+
+        action_name = "BILLING_SUSPENDED" if new_billing_status == "suspended" else "BILLING_RESUMED"
+        record_audit_log(
+            action=action_name,
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Billing status for shop '{t_shop_name or t_username}' (ID: {user_id}) set to {new_billing_status.upper()}",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        msg = (
+            f"Billing for '{t_shop_name or t_username}' has been SUSPENDED. New POS checkout and invoice generation are blocked."
+            if new_billing_status == "suspended"
+            else f"Billing for '{t_shop_name or t_username}' has been RESUMED. Shop users can now generate invoices."
+        )
+
+        return jsonify({
+            "success": True,
+            "billing_status": new_billing_status,
+            "message": msg
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to update billing status: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users/<int:user_id>/status", methods=["PUT"])
+@developer_required
+def developer_update_user_status(current_user, user_id):
+    """
+    Activates or deactivates a user account.
+    If deactivating, immediately revokes all active sessions for that account.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        new_status = str(payload.get("status", "")).strip().lower()
+
+        if new_status not in ("active", "inactive"):
+            return jsonify({"success": False, "message": "Status must be 'active' or 'inactive'."}), 400
+
+        # Safety: disallow deactivating self
+        if user_id == current_user["id"]:
+            return jsonify({"success": False, "message": "You cannot deactivate your own Developer account."}), 400
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT username, role, status FROM users WHERE id = %s;", (user_id,))
+                target_user = cur.fetchone()
+                if not target_user:
+                    return jsonify({"success": False, "message": "User not found."}), 404
+
+                t_username, t_role, current_status = target_user
+
+                cur.execute("UPDATE users SET status = %s, updated_at = NOW() WHERE id = %s;", (new_status, user_id))
+
+                # If deactivated, purge all active sessions immediately
+                if new_status == "inactive":
+                    cur.execute("DELETE FROM user_sessions WHERE user_id = %s;", (user_id,))
+
+                conn.commit()
+
+        record_audit_log(
+            action="USER_STATUS_CHANGE",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Changed status of user '{t_username}' (ID: {user_id}) from '{current_status}' to '{new_status}'",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"User '{t_username}' status updated to {new_status}."
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to update status: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users/<int:user_id>/reset-password", methods=["POST"])
+@developer_required
+def developer_reset_user_password(current_user, user_id):
+    """
+    Resets account access for a user.
+    Invalidates all existing sessions, forcing re-authentication.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        new_password = str(payload.get("new_password", "")).strip()
+
+        # If not supplied, generate a strong random temporary password
+        auto_generated = False
+        if not new_password:
+            new_password = f"Swamidatt@{secrets.token_hex(4)}"
+            auto_generated = True
+        elif len(new_password) < 6:
+            return jsonify({"success": False, "message": "New password must be at least 6 characters."}), 400
+
+        new_hash = generate_password_hash(new_password)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT username FROM users WHERE id = %s;", (user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"success": False, "message": "User not found."}), 404
+
+                target_username = row[0]
+
+                cur.execute("UPDATE users SET password_hash = %s, updated_at = NOW() WHERE id = %s;", (new_hash, user_id))
+                # Invalidate existing sessions for security
+                cur.execute("DELETE FROM user_sessions WHERE user_id = %s;", (user_id,))
+                conn.commit()
+
+        record_audit_log(
+            action="USER_PASSWORD_RESET",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Reset password for user '{target_username}' (ID: {user_id})",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        resp = {
+            "success": True,
+            "message": f"Password for user '{target_username}' reset successfully. Active sessions revoked."
+        }
+        if auto_generated:
+            resp["temporary_password"] = new_password
+
+        return jsonify(resp), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to reset password: {str(e)}"}), 500
+
+
+@app.route("/api/developer/users/<int:user_id>", methods=["DELETE"])
+@developer_required
+def developer_delete_user(current_user, user_id):
+    """
+    Safely and permanently deletes a shop account:
+    - Developer account can never be deleted.
+    - Developer Super Admin accounts (role == 'developer_super_admin' or username == 'dev_admin') cannot be deleted.
+    - Revokes all active sessions for the user.
+    - Preserves statutory and financial records:
+        * Any bills linked to this user (bills.user_id) are safely detached (user_id = NULL)
+          to preserve invoices, line items, payments, customer records, taxes, and accounting ledger.
+        * Audit logs (developer_audit_logs.user_id) are safely detached (user_id = NULL),
+          preserving the username string and complete history.
+    - Transactionally deletes the user from PostgreSQL with rollback on error.
+    - Records an audit log in developer_audit_logs for statutory tracking.
+    """
+    try:
+        if user_id == current_user["id"]:
+            return jsonify({"success": False, "message": "You cannot delete your own Developer account."}), 400
+
+        with get_db_connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, username, role, shop_name, status, billing_status FROM users WHERE id = %s;",
+                        (user_id,)
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"success": False, "message": "Shop account not found."}), 404
+
+                    target_id, target_username, target_role, target_shop_name, target_status, target_billing_status = row
+
+                    if target_role == "developer_super_admin" or target_username == "dev_admin":
+                        return jsonify({"success": False, "message": "Developer Super Admin accounts cannot be deleted."}), 400
+
+                    # 1. Count associated bills that will be safely detached & preserved
+                    cur.execute("SELECT COUNT(*) FROM bills WHERE user_id = %s;", (user_id,))
+                    bills_count = cur.fetchone()[0] or 0
+
+                    # 2. Revoke active sessions immediately
+                    cur.execute("DELETE FROM user_sessions WHERE user_id = %s;", (user_id,))
+
+                    # 3. Preserve financial invoices: detach user_id (set to NULL)
+                    # All invoices, invoice numbers, amounts, items, taxes, customers, and shop names are 100% retained!
+                    cur.execute("UPDATE bills SET user_id = NULL WHERE user_id = %s;", (user_id,))
+
+                    # 4. Preserve audit logs: detach foreign key
+                    cur.execute("UPDATE developer_audit_logs SET user_id = NULL WHERE user_id = %s;", (user_id,))
+
+                    # 5. Permanently delete the user row from users table
+                    cur.execute("DELETE FROM users WHERE id = %s;", (user_id,))
+
+                    # 6. Record statutory developer audit log
+                    cur.execute(
+                        """
+                        INSERT INTO developer_audit_logs (user_id, username, action, details, ip_address, status)
+                        VALUES (%s, %s, %s, %s, %s, %s);
+                        """,
+                        (
+                            current_user["id"],
+                            current_user["username"],
+                            "SHOP_ACCOUNT_PERMANENTLY_DELETED",
+                            f"Permanently deleted account '{target_username}' (ID: {user_id}, Shop: '{target_shop_name}'). {bills_count} associated invoice(s) detached and preserved for statutory tax/financial compliance.",
+                            get_client_ip(),
+                            "success"
+                        )
+                    )
+
+                conn.commit()
+
+                return jsonify({
+                    "success": True,
+                    "action_taken": "deleted",
+                    "deleted_user_id": user_id,
+                    "deleted_username": target_username,
+                    "bills_preserved": bills_count,
+                    "message": f"Shop account '{target_username}' ({target_shop_name}) has been permanently deleted from the database. All active sessions have been revoked. Any associated invoice records ({bills_count}) remain preserved in historical accounts."
+                }), 200
+
+            except Exception as tx_err:
+                conn.rollback()
+                raise tx_err
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to permanently delete shop account: {str(e)}"}), 500
+
+
+@app.route("/api/developer/system", methods=["GET"])
+@developer_required
+def developer_system_diagnostics(current_user):
+    """
+    Provides detailed system monitoring, database telemetry, configuration audits,
+    and recent error records.
+    """
+    try:
+        start_ping = time.time()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                cur.fetchone()
+                db_latency_ms = round((time.time() - start_ping) * 1000, 2)
+
+                # PostgreSQL Server Stats
+                cur.execute(
+                    """
+                    SELECT numbackends, xact_commit, xact_rollback, conflicts, deadlocks
+                    FROM pg_stat_database
+                    WHERE datname = 'ajay_footwear';
+                    """
+                )
+                db_stats_row = cur.fetchone()
+                db_stats = {
+                    "active_connections": db_stats_row[0] if db_stats_row else 1,
+                    "commits": db_stats_row[1] if db_stats_row else 0,
+                    "rollbacks": db_stats_row[2] if db_stats_row else 0,
+                    "conflicts": db_stats_row[3] if db_stats_row else 0,
+                    "deadlocks": db_stats_row[4] if db_stats_row else 0,
+                }
+
+                cur.execute("SELECT pg_database_size('ajay_footwear');")
+                db_size_bytes = cur.fetchone()[0] or 0
+
+        # Configuration Checks (Sensitive credentials safely masked)
+        config_status = {
+            "DB_HOST": {"value": os.getenv("DB_HOST", "localhost"), "status": "Configured"},
+            "DB_PORT": {"value": os.getenv("DB_PORT", "5432"), "status": "Configured"},
+            "DB_NAME": {"value": os.getenv("DB_NAME", "ajay_footwear"), "status": "Configured"},
+            "DB_USER": {"value": os.getenv("DB_USER", "postgres"), "status": "Configured"},
+            "DB_PASSWORD": {"value": "••••••••••••", "status": "Protected (Masked)"},
+            "INVOICES_DIRECTORY": {
+                "value": INVOICES_DIR,
+                "exists": os.path.isdir(INVOICES_DIR),
+                "writable": os.access(INVOICES_DIR, os.W_OK)
+            },
+            "BACKUPS_DIRECTORY": {
+                "value": BACKUPS_DIR,
+                "exists": os.path.isdir(BACKUPS_DIR),
+                "writable": os.access(BACKUPS_DIR, os.W_OK)
+            }
+        }
+
+        uptime_seconds = int((datetime.now(timezone.utc) - SERVER_START_TIME).total_seconds())
+
+        return jsonify({
+            "success": True,
+            "environment": {
+                "python_version": sys.version.split()[0],
+                "platform": platform.platform(),
+                "os": platform.system(),
+                "node_name": platform.node(),
+                "server_started_at": SERVER_START_TIME.isoformat(),
+                "uptime_seconds": uptime_seconds,
+            },
+            "database_diagnostics": {
+                "status": "Healthy",
+                "ping_latency_ms": db_latency_ms,
+                "size_mb": round(db_size_bytes / (1024 * 1024), 2),
+                "stats": db_stats
+            },
+            "configuration": config_status,
+            "system_errors": list(RECENT_SYSTEM_ERRORS)
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Diagnostics failed: {str(e)}"}), 500
+
+
+@app.route("/api/developer/security/logs", methods=["GET"])
+@developer_required
+def developer_security_logs(current_user):
+    """
+    Returns paginated audit logs and recent login attempts.
+    """
+    try:
+        limit = min(int(request.args.get("limit", 100)), 200)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # 1. Audit logs
+                cur.execute(
+                    """
+                    SELECT id, user_id, username, action, details, ip_address, status, created_at
+                    FROM developer_audit_logs
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,)
+                )
+                audit_logs = [
+                    {
+                        "id": row[0],
+                        "user_id": row[1],
+                        "username": row[2] or "System",
+                        "action": row[3],
+                        "details": row[4],
+                        "ip_address": row[5],
+                        "status": row[6],
+                        "created_at": normalize_datetime(row[7])
+                    }
+                    for row in cur.fetchall()
+                ]
+
+                # 2. Login activity history
+                cur.execute(
+                    """
+                    SELECT id, username, ip_address, attempt_type, success, attempt_time
+                    FROM login_attempts
+                    ORDER BY attempt_time DESC
+                    LIMIT 50;
+                    """,
+                )
+                login_attempts = [
+                    {
+                        "id": row[0],
+                        "username": row[1],
+                        "ip_address": row[2],
+                        "attempt_type": row[3],
+                        "success": bool(row[4]),
+                        "attempt_time": normalize_datetime(row[5])
+                    }
+                    for row in cur.fetchall()
+                ]
+
+        return jsonify({
+            "success": True,
+            "audit_logs": audit_logs,
+            "login_attempts": login_attempts
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to retrieve security logs: {str(e)}"}), 500
+
+
+@app.route("/api/developer/backups", methods=["GET"])
+@developer_required
+def developer_get_backups(current_user):
+    """
+    Returns list of backup records from the database and verifies disk storage.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, filename, file_size_bytes, backup_type, status, error_message, created_by, created_at
+                    FROM system_backups
+                    ORDER BY created_at DESC;
+                    """
+                )
+                backups = []
+                for row in cur.fetchall():
+                    filepath = os.path.join(BACKUPS_DIR, row[1])
+                    disk_exists = os.path.isfile(filepath)
+                    backups.append({
+                        "id": row[0],
+                        "filename": row[1],
+                        "file_size_bytes": row[2],
+                        "file_size_formatted": f"{round(row[2] / (1024 * 1024), 2)} MB" if row[2] > 1024*1024 else f"{round(row[2] / 1024, 1)} KB",
+                        "backup_type": row[3],
+                        "status": row[4],
+                        "error_message": row[5],
+                        "created_by": row[6],
+                        "created_at": normalize_datetime(row[7]),
+                        "disk_verified": disk_exists
+                    })
+
+        return jsonify({"success": True, "backups": backups}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to load backups: {str(e)}"}), 500
+
+
+@app.route("/api/developer/backups", methods=["POST"])
+@developer_required
+def developer_create_backup(current_user):
+    """
+    Creates a secure, complete JSON snapshot of all system tables.
+    Stored outside frontend web root in backend/backups/.
+    """
+    try:
+        timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"swamidatt_backup_{timestamp_str}.json"
+        filepath = os.path.join(BACKUPS_DIR, filename)
+
+        tables_data = {}
+        total_records = 0
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Tables to snapshot in order
+                target_tables = [
+                    "categories",
+                    "category_sizes",
+                    "products",
+                    "product_sizes",
+                    "customers",
+                    "suppliers",
+                    "purchases",
+                    "purchase_items",
+                    "bills",
+                    "bill_items",
+                    "users"
+                ]
+
+                for tbl in target_tables:
+                    cur.execute(f"SELECT * FROM {tbl};")
+                    col_names = [desc[0] for desc in cur.description]
+                    rows = cur.fetchall()
+                    serialized_rows = []
+                    for row in rows:
+                        row_dict = {}
+                        for idx, col in enumerate(col_names):
+                            val = row[idx]
+                            if hasattr(val, "isoformat"):
+                                val = val.isoformat()
+                            elif hasattr(val, "__float__"):
+                                val = float(val)
+                            row_dict[col] = val
+                        serialized_rows.append(row_dict)
+                    tables_data[tbl] = serialized_rows
+                    total_records += len(serialized_rows)
+
+        backup_payload = {
+            "application": "SWAMIDATT FOOTWEAR ERP",
+            "version": "1.0",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": current_user["username"],
+            "total_records": total_records,
+            "tables": tables_data
+        }
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(backup_payload, f, indent=2, ensure_ascii=False)
+
+        file_size = os.path.getsize(filepath)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO system_backups (filename, file_size_bytes, backup_type, status, created_by)
+                    VALUES (%s, %s, 'manual', 'completed', %s);
+                    """,
+                    (filename, file_size, current_user["username"])
+                )
+                conn.commit()
+
+        record_audit_log(
+            action="BACKUP_CREATED",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Created backup '{filename}' ({round(file_size / 1024, 1)} KB, {total_records} records)",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Backup created successfully: {filename}",
+            "backup": {
+                "filename": filename,
+                "file_size_bytes": file_size,
+                "total_records": total_records,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+        }), 201
+    except Exception as e:
+        record_audit_log(
+            action="BACKUP_FAILED",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Backup generation failed: {str(e)}",
+            ip_address=get_client_ip(),
+            status="failed"
+        )
+        return jsonify({"success": False, "message": f"Backup failed: {str(e)}"}), 500
+
+
+@app.route("/api/developer/backups/restore", methods=["POST"])
+@developer_required
+def developer_restore_backup(current_user):
+    """
+    Restores the database from a verified JSON backup snapshot.
+    Requires explicit server-side confirmation: {"confirm_restore": true, "filename": "..."}.
+    Executes in a single database transaction with automatic rollback on error.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        filename = os.path.basename(str(payload.get("filename", "")).strip())
+        confirm = bool(payload.get("confirm_restore", False))
+
+        if not confirm:
+            return jsonify({
+                "success": False,
+                "message": "Destructive restore requires explicit confirmation: confirm_restore must be true."
+            }), 400
+
+        if not filename or not filename.endswith(".json"):
+            return jsonify({"success": False, "message": "Invalid backup filename."}), 400
+
+        filepath = os.path.join(BACKUPS_DIR, filename)
+        if not os.path.isfile(filepath):
+            return jsonify({"success": False, "message": f"Backup file '{filename}' does not exist on disk."}), 404
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            backup_data = json.load(f)
+
+        tables = backup_data.get("tables", {})
+        if not tables:
+            return jsonify({"success": False, "message": "Backup file does not contain valid table data."}), 400
+
+        # Execute restoration in a transaction
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Truncate tables in reverse dependency order
+                cur.execute(
+                    """
+                    TRUNCATE bill_items, bills, purchase_items, purchases, 
+                             product_sizes, products, category_sizes, categories, 
+                             customers, suppliers CASCADE;
+                    """
+                )
+
+                # 1. Categories
+                for r in tables.get("categories", []):
+                    cur.execute(
+                        "INSERT INTO categories (id, category_name, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s);",
+                        (r["id"], r["category_name"], r.get("status", "active"), r["created_at"], r["updated_at"])
+                    )
+
+                # 2. Category sizes
+                for r in tables.get("category_sizes", []):
+                    cur.execute(
+                        "INSERT INTO category_sizes (id, category_id, size, created_at) VALUES (%s, %s, %s, %s);",
+                        (r["id"], r["category_id"], r["size"], r["created_at"])
+                    )
+
+                # 3. Products
+                for r in tables.get("products", []):
+                    cur.execute(
+                        """
+                        INSERT INTO products (id, product_name, category_id, selling_price, barcode, status, created_at, updated_at, product_code, purchase_price, description)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                        """,
+                        (r["id"], r["product_name"], r.get("category_id"), r["selling_price"], r["barcode"], r.get("status", "active"), r["created_at"], r["updated_at"], r.get("product_code"), r.get("purchase_price", 0), r.get("description", ""))
+                    )
+
+                # 4. Product sizes
+                for r in tables.get("product_sizes", []):
+                    cur.execute(
+                        "INSERT INTO product_sizes (id, product_id, size, stock_quantity, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s);",
+                        (r["id"], r["product_id"], r["size"], r["stock_quantity"], r["created_at"], r["updated_at"])
+                    )
+
+                # 5. Customers
+                for r in tables.get("customers", []):
+                    cur.execute(
+                        "INSERT INTO customers (id, name, phone, email, address, outstanding_amount, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);",
+                        (r["id"], r["name"], r.get("phone"), r.get("email"), r.get("address"), r.get("outstanding_amount", 0), r.get("status", "active"), r["created_at"], r["updated_at"])
+                    )
+
+                # 6. Suppliers
+                for r in tables.get("suppliers", []):
+                    cur.execute(
+                        "INSERT INTO suppliers (id, supplier_name, contact_person, phone, email, address, gst_number, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);",
+                        (r["id"], r["supplier_name"], r.get("contact_person"), r.get("phone"), r.get("email"), r.get("address"), r.get("gst_number"), r.get("status", "active"), r["created_at"], r["updated_at"])
+                    )
+
+                # 7. Purchases
+                for r in tables.get("purchases", []):
+                    cur.execute(
+                        "INSERT INTO purchases (id, purchase_no, supplier_id, supplier_name, total_amount, payment_status, payment_mode, notes, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);",
+                        (r["id"], r["purchase_no"], r.get("supplier_id"), r["supplier_name"], r["total_amount"], r.get("payment_status", "Paid"), r.get("payment_mode", "Bank Transfer"), r.get("notes"), r["created_at"])
+                    )
+
+                # 8. Purchase items
+                for r in tables.get("purchase_items", []):
+                    cur.execute(
+                        "INSERT INTO purchase_items (id, purchase_id, product_id, product_name, size, quantity, purchase_price, total_price, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);",
+                        (r["id"], r["purchase_id"], r.get("product_id"), r["product_name"], r["size"], r["quantity"], r["purchase_price"], r["total_price"], r["created_at"])
+                    )
+
+                # 9. Bills
+                for r in tables.get("bills", []):
+                    cur.execute(
+                        """
+                        INSERT INTO bills (id, bill_no, customer_name, customer_phone, payment_mode, total_amount, status, created_at, customer_id, discount, tax, amount_received, change_returned, pdf_path, billing_address, state_of_supply, terms_conditions, description, round_off, subtotal)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                        """,
+                        (r["id"], r["bill_no"], r.get("customer_name"), r.get("customer_phone"), r.get("payment_mode"), r["total_amount"], r.get("status"), r["created_at"], r.get("customer_id"), r.get("discount", 0), r.get("tax", 0), r.get("amount_received", 0), r.get("change_returned", 0), r.get("pdf_path"), r.get("billing_address"), r.get("state_of_supply"), r.get("terms_conditions"), r.get("description"), r.get("round_off", 0), r.get("subtotal", 0))
+                    )
+
+                # 10. Bill items
+                for r in tables.get("bill_items", []):
+                    cur.execute(
+                        """
+                        INSERT INTO bill_items (id, bill_id, product_id, product_name, size, quantity, selling_price, total_price, created_at, discount_percent, discount_amount, tax_percent, tax_amount, barcode)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                        """,
+                        (r["id"], r["bill_id"], r.get("product_id"), r["product_name"], r["size"], r["quantity"], r["selling_price"], r["total_price"], r["created_at"], r.get("discount_percent", 0), r.get("discount_amount", 0), r.get("tax_percent", 0), r.get("tax_amount", 0), r.get("barcode"))
+                    )
+
+                # Reset sequence IDs to prevent duplicate key errors on future inserts
+                seq_tables = [
+                    ("categories", "categories_id_seq"),
+                    ("category_sizes", "category_sizes_id_seq"),
+                    ("products", "products_id_seq"),
+                    ("product_sizes", "product_sizes_id_seq"),
+                    ("customers", "customers_id_seq"),
+                    ("suppliers", "suppliers_id_seq"),
+                    ("purchases", "purchases_id_seq"),
+                    ("purchase_items", "purchase_items_id_seq"),
+                    ("bills", "bills_id_seq"),
+                    ("bill_items", "bill_items_id_seq"),
+                ]
+                for tbl, seq in seq_tables:
+                    cur.execute(f"SELECT setval('{seq}', COALESCE((SELECT MAX(id) FROM {tbl}), 1));")
+
+                conn.commit()
+
+        record_audit_log(
+            action="BACKUP_RESTORED",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Database restored from backup snapshot '{filename}'",
+            ip_address=get_client_ip(),
+            status="success"
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Database successfully restored from '{filename}'."
+        }), 200
+    except Exception as e:
+        record_audit_log(
+            action="BACKUP_RESTORE_FAILED",
+            user_id=current_user["id"],
+            username=current_user["username"],
+            details=f"Database restoration failed: {str(e)}",
+            ip_address=get_client_ip(),
+            status="failed"
+        )
+        return jsonify({"success": False, "message": f"Restore failed: {str(e)}"}), 500
+
+
+@app.route("/api/developer/backups/download/<path:filename>", methods=["GET"])
+@developer_required
+def developer_download_backup(current_user, filename):
+    """Safely serves backup files strictly from BACKUPS_DIR."""
+    safe_filename = os.path.basename(filename)
+    if not safe_filename.endswith(".json") and not safe_filename.endswith(".sql"):
+        return jsonify({"success": False, "message": "Invalid file format."}), 400
+
+    target_path = os.path.join(BACKUPS_DIR, safe_filename)
+    if not os.path.isfile(target_path):
+        return jsonify({"success": False, "message": "File not found."}), 404
+
+    return send_file(target_path, as_attachment=True, download_name=safe_filename)
 
 
 # ==========================================
@@ -792,10 +2395,12 @@ def create_category():
         }), 201
     except ValueError as exc:
         return jsonify({"message": str(exc)}), 400
-    except psycopg.Error:
-        return jsonify({"message": "Database connection error."}), 500
-    except Exception:
-        return jsonify({"message": "Failed to add category."}), 500
+    except psycopg.Error as e:
+        print(f"Database error creating category: {e}")
+        return jsonify({"message": f"Database error: {str(e)}"}), 500
+    except Exception as e:
+        print(f"Unexpected error creating category: {e}")
+        return jsonify({"message": f"Failed to add category: {str(e)}"}), 500
 
 
 @app.route("/api/categories/<int:category_id>", methods=["GET"])
@@ -895,10 +2500,12 @@ def update_category(category_id):
         })
     except ValueError as exc:
         return jsonify({"message": str(exc)}), 400
-    except psycopg.Error:
-        return jsonify({"message": "Database connection error."}), 500
-    except Exception:
-        return jsonify({"message": "Failed to update category."}), 500
+    except psycopg.Error as e:
+        print(f"Database error updating category: {e}")
+        return jsonify({"message": f"Database error: {str(e)}"}), 500
+    except Exception as e:
+        print(f"Unexpected error updating category: {e}")
+        return jsonify({"message": f"Failed to update category: {str(e)}"}), 500
 
 
 @app.route("/api/categories/<int:category_id>", methods=["DELETE"])
@@ -906,23 +2513,20 @@ def delete_category(category_id):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM products WHERE category_id = %s AND status = 'active' LIMIT 1",
-                    (category_id,),
-                )
-                if cur.fetchone():
-                    cur.execute(
-                        "UPDATE categories SET status = 'inactive', updated_at = NOW() WHERE id = %s RETURNING id, category_name, status",
-                        (category_id,),
-                    )
-                    row = cur.fetchone()
-                    conn.commit()
-                    return jsonify({
-                        "message": "This category is currently used by products and has been deactivated instead.",
-                        "category": {"id": row[0], "category_name": row[1], "status": row[2]},
-                    })
+                cur.execute("SELECT id, category_name FROM categories WHERE id = %s", (category_id,))
+                cat_row = cur.fetchone()
+                if not cat_row:
+                    return jsonify({"message": "Category not found."}), 404
 
+                cat_name = cat_row[1]
+
+                # Safe unlink: preserve all product records by setting category_id to NULL
+                cur.execute("UPDATE products SET category_id = NULL WHERE category_id = %s", (category_id,))
+
+                # Delete allowed sizes associated with this category
                 cur.execute("DELETE FROM category_sizes WHERE category_id = %s", (category_id,))
+
+                # Delete the category
                 cur.execute("DELETE FROM categories WHERE id = %s RETURNING id, category_name", (category_id,))
                 row = cur.fetchone()
                 conn.commit()
@@ -931,13 +2535,15 @@ def delete_category(category_id):
             return jsonify({"message": "Category not found."}), 404
 
         return jsonify({
-            "message": "Category deleted successfully.",
+            "message": f"Category '{cat_name}' deleted successfully.",
             "category": {"id": row[0], "category_name": row[1]},
         })
-    except psycopg.Error:
-        return jsonify({"message": "Database connection error."}), 500
-    except Exception:
-        return jsonify({"message": "Failed to delete category."}), 500
+    except psycopg.Error as e:
+        print(f"Database error deleting category {category_id}: {e}")
+        return jsonify({"message": f"Database error: {str(e)}"}), 500
+    except Exception as e:
+        print(f"Unexpected error deleting category {category_id}: {e}")
+        return jsonify({"message": f"Failed to delete category: {str(e)}"}), 500
 
 
 @app.route("/api/categories/<int:category_id>/sizes", methods=["GET"])
@@ -1014,8 +2620,8 @@ def get_products():
                 params = []
 
                 if barcode_param:
-                    query += " AND p.barcode = %s"
-                    params.append(barcode_param)
+                    query += " AND (p.barcode = %s OR p.product_code = %s OR LOWER(p.barcode) = LOWER(%s) OR LOWER(p.product_code) = LOWER(%s))"
+                    params.extend([barcode_param, barcode_param, barcode_param, barcode_param])
                 elif search_term:
                     query += """
                         AND (
@@ -1084,9 +2690,18 @@ def get_product(product_id):
 @app.route("/api/products/barcode/<barcode>", methods=["GET"])
 def get_product_by_barcode(barcode):
     try:
+        cleaned_barcode = barcode.strip()
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM products WHERE barcode = %s AND status = 'active'", (barcode.strip(),))
+                cur.execute(
+                    """
+                    SELECT id FROM products 
+                    WHERE (barcode = %s OR product_code = %s OR LOWER(barcode) = LOWER(%s) OR LOWER(product_code) = LOWER(%s))
+                      AND status = 'active'
+                    LIMIT 1;
+                    """,
+                    (cleaned_barcode, cleaned_barcode, cleaned_barcode, cleaned_barcode),
+                )
                 row = cur.fetchone()
                 if not row:
                     return jsonify({"message": "Product not found for this barcode."}), 404
@@ -1370,6 +2985,20 @@ def get_next_invoice_number():
 @app.route("/api/billing/checkout", methods=["POST"])
 def billing_checkout():
     try:
+        # Extract and verify authentication session
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif request.headers.get("X-Auth-Token"):
+            token = request.headers.get("X-Auth-Token").strip()
+
+        if not token:
+            return jsonify({
+                "success": False,
+                "message": "Authentication required to generate bills. Please log in."
+            }), 401
+
         payload = request.get_json(silent=True) or {}
         items = payload.get("items") or []
         customer_id = payload.get("customer_id")
@@ -1392,6 +3021,44 @@ def billing_checkout():
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # 1. Authorize user session & verify billing status in live database
+                cur.execute(
+                    """
+                    SELECT u.id, u.username, u.shop_name, u.billing_status, u.status
+                    FROM user_sessions s
+                    JOIN users u ON s.user_id = u.id
+                    WHERE s.token = %s AND s.expires_at > NOW();
+                    """,
+                    (token,)
+                )
+                auth_user = cur.fetchone()
+                if not auth_user:
+                    return jsonify({
+                        "success": False,
+                        "message": "Session expired or invalid. Please log in again."
+                    }), 401
+
+                auth_user_id, auth_username, auth_shop_name, auth_billing_status, auth_status = auth_user
+
+                if auth_status == "archived":
+                    return jsonify({
+                        "success": False,
+                        "message": "This shop account has been archived. Billing operations are permanently restricted under retention policy."
+                    }), 403
+
+                if auth_status != "active":
+                    return jsonify({
+                        "success": False,
+                        "message": "This shop account is currently deactivated. Billing operations are blocked."
+                    }), 403
+
+                if auth_billing_status == "suspended":
+                    return jsonify({
+                        "success": False,
+                        "billing_suspended": True,
+                        "message": f"Billing operations are currently SUSPENDED for shop '{auth_shop_name or auth_username}'. You cannot create new invoices or complete POS checkout. Please contact the administrator to resume billing."
+                    }), 403
+
                 # Generate Bill No: e.g. SW-1001, SW-1002...
                 cur.execute("SELECT COALESCE(MAX(id), 0) + 1024 FROM bills")
                 next_num = cur.fetchone()[0]
@@ -1480,23 +3147,27 @@ def billing_checkout():
                     bill_status = "Paid"
                     dues_amount = 0.0
 
-                # Insert bill
+                effective_shop_name = auth_shop_name or "SWAMIDATT FOOTWEAR - Main Branch"
+
+                # Insert bill with user_id and shop_name
                 cur.execute(
                     """
                     INSERT INTO bills (
                         bill_no, customer_id, customer_name, customer_phone, billing_address,
                         state_of_supply, terms_conditions, description, payment_mode, subtotal,
-                        discount, tax, round_off, total_amount, amount_received, change_returned, status
+                        discount, tax, round_off, total_amount, amount_received, change_returned, status,
+                        user_id, shop_name
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, bill_no, customer_name, customer_phone, payment_mode, total_amount, status, created_at,
                               discount, tax, amount_received, change_returned, pdf_path, billing_address, state_of_supply,
-                              terms_conditions, description, round_off, subtotal
+                              terms_conditions, description, round_off, subtotal, user_id, shop_name
                     """,
                     (
                         bill_no, customer_id if customer_id else None, customer_name, customer_phone,
                         billing_address, state_of_supply, terms_conditions, description, payment_mode,
-                        subtotal, discount, tax, round_off, grand_total, amount_received, change_returned, bill_status
+                        subtotal, discount, tax, round_off, grand_total, amount_received, change_returned, bill_status,
+                        auth_user_id, effective_shop_name
                     ),
                 )
                 bill_row = cur.fetchone()
@@ -1565,6 +3236,8 @@ def billing_checkout():
                 "description": bill_row[16] or "",
                 "round_off": float(bill_row[17] or 0),
                 "subtotal": float(bill_row[18] or subtotal),
+                "user_id": bill_row[19],
+                "shop_name": bill_row[20] or effective_shop_name,
                 "items": processed_items,
             }
         }), 201

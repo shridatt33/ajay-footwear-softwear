@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import React, { useEffect, useRef, useState, useMemo, Fragment } from 'react'
 import { API_BASE_URL, SHOP_INFO } from '../config'
+import { useAuth } from '../context/AuthContext'
 import InvoiceModal from '../components/InvoiceModal'
 import BarcodeDisplay from '../components/BarcodeDisplay'
 import { generateInvoicePDFData } from '../utils/pdfGenerator'
@@ -18,7 +19,44 @@ import {
 
 const DEFAULT_SIZES_FALLBACK = [6, 7, 8, 9, 10, 11].map((s) => ({ size: s, stock_quantity: 10 }))
 
+// Helper to ensure backward compatibility and grouped cart structure
+const migrateCartToGrouped = (items) => {
+  if (!Array.isArray(items) || items.length === 0) return []
+  if (items[0] && Array.isArray(items[0].sizes)) return items
+
+  // Group flat items by product_id
+  const groupsMap = new Map()
+  for (const item of items) {
+    const key = item.product_id ? String(item.product_id) : `manual-${item.row_id || Math.random()}`
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        group_id: `grp-${key}-${Date.now()}`,
+        product_id: item.product_id || null,
+        product_name: item.product_name || '',
+        product_code: item.product_code || '',
+        barcode: item.barcode || '',
+        common_price: Number(item.selling_price || 0),
+        is_expanded: true,
+        available_sizes: item.available_sizes || [],
+        sizes: [],
+      })
+    }
+    const group = groupsMap.get(key)
+    group.sizes.push({
+      size: item.size || 7,
+      quantity: Number(item.quantity || 1),
+      selling_price: Number(item.selling_price || 0),
+      max_stock: Number(item.max_stock || 999),
+      total: Math.round(Number(item.quantity || 1) * Number(item.selling_price || 0) * 100) / 100,
+    })
+  }
+  return Array.from(groupsMap.values())
+}
+
 export default function BillingPage() {
+  const { user, token, refreshSession } = useAuth()
+  const isBillingSuspended = user?.billing_status === 'suspended'
+
   // Master Data
   const [products, setProducts] = useState([])
   const [customers, setCustomers] = useState([])
@@ -33,15 +71,25 @@ export default function BillingPage() {
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false)
   const [newCustForm, setNewCustForm] = useState({ name: '', phone: '', email: '', address: '' })
 
-  // Cart / Table Items
-  // Each row: { row_id, product_id, product_name, product_code, barcode, size, available_sizes, max_stock, quantity, selling_price, total }
+  // Cart / Table Items (Grouped by Footwear Model with Multi-Size Variants)
+  // Each group: { group_id, product_id, product_name, product_code, barcode, common_price, is_expanded, available_sizes, sizes: [{ size, quantity, selling_price, max_stock, total }] }
   const [cartItems, setCartItems] = useState(() => {
     try {
       const saved = sessionStorage.getItem('swamidatt_billing_cart')
-      return saved ? JSON.parse(saved) : []
+      return saved ? migrateCartToGrouped(JSON.parse(saved)) : []
     } catch {
       return []
     }
+  })
+
+  // Multi-Size Wholesale Selector Modal State
+  const [multiSizeModal, setMultiSizeModal] = useState({
+    isOpen: false,
+    product: null,
+    commonPrice: 0,
+    sizesState: [],
+    error: '',
+    existingGroupIndex: -1,
   })
 
   // Bottom Section States
@@ -63,6 +111,7 @@ export default function BillingPage() {
 
   // Refs
   const scannerInputRef = useRef(null)
+  const modalFirstInputRef = useRef(null)
   const cartItemsRef = useRef(cartItems)
   const isProcessingScanRef = useRef(false)
   const lastScanRef = useRef({ code: '', time: 0 })
@@ -80,6 +129,19 @@ export default function BillingPage() {
   useEffect(() => {
     scannerInputRef.current?.focus()
   }, [])
+
+  // Auto-focus first quantity input when multi-size modal opens
+  useEffect(() => {
+    if (multiSizeModal.isOpen) {
+      const timer = setTimeout(() => {
+        if (modalFirstInputRef.current) {
+          modalFirstInputRef.current.focus()
+          modalFirstInputRef.current.select?.()
+        }
+      }, 100)
+      return () => clearTimeout(timer)
+    }
+  }, [multiSizeModal.isOpen])
 
   // Audio Feedback (Beep on scan / error)
   const playBeep = (type = 'success') => {
@@ -195,184 +257,397 @@ export default function BillingPage() {
     }
   }
 
-  // Add Product to Cart / Billing Table (with Duplicate Prevention & Quantity Merging)
-  const addProductToTable = (product, targetSize = null, qtyToAdd = 1) => {
-    if (!product) return false
+  // ---------------------------------------------------------------------------
+  // MULTI-SIZE WHOLESALE SELECTOR MODAL HANDLERS
+  // ---------------------------------------------------------------------------
+  const openMultiSizeModal = (product, existingGroupIndex = -1) => {
+    if (!product) return
 
-    const availableSizes = (product.sizes || []).filter(
-      (s) => Number(s.stock_quantity ?? s.stock ?? 0) > 0
-    )
-
-    if (availableSizes.length === 0 && (product.total_stock ?? product.stock ?? 0) <= 0) {
-      playBeep('error')
-      setAlertMsg({
-        type: 'error',
-        text: `Product "${product.product_name}" is completely Out of Stock.`,
-      })
-      return false
-    }
-
-    // Determine size to use
-    let sizeNum = targetSize !== null ? Number(targetSize) : null
-    if (sizeNum === null) {
-      const primarySizeObj = availableSizes[0] || (product.sizes && product.sizes[0])
-      sizeNum = primarySizeObj ? Number(primarySizeObj.size) : 7
-    }
-
-    const sizeObj = (product.sizes || []).find((s) => Number(s.size) === sizeNum)
-    const maxStock = sizeObj ? Number(sizeObj.stock_quantity ?? sizeObj.stock ?? 0) : 100
-
+    let groupIndex = existingGroupIndex
     const currentCart = cartItemsRef.current || cartItems
-    const existingIndex = currentCart.findIndex(
-      (it) => it.product_id === product.id && Number(it.size) === sizeNum
-    )
 
-    if (existingIndex >= 0) {
-      // Item already in table -> increment quantity
-      const existing = currentCart[existingIndex]
-      const newQty = existing.quantity + qtyToAdd
-
-      if (newQty > maxStock && maxStock > 0) {
-        playBeep('error')
-        setAlertMsg({
-          type: 'error',
-          text: `Only ${maxStock} units of Size ${sizeNum} available for "${product.product_name}".`,
-        })
-        return false
-      }
-
-      const updated = [...currentCart]
-      const newTotal = Math.round(newQty * existing.selling_price * 100) / 100
-      updated[existingIndex] = {
-        ...existing,
-        quantity: newQty,
-        total: newTotal,
-      }
-      setCartItems(updated)
-      playBeep('success')
-      setAlertMsg({
-        type: 'success',
-        text: `Updated "${product.product_name}" (Size ${sizeNum}) quantity to ${newQty}.`,
-      })
-      return true
-    } else {
-      // New row entry
-      const sellingPrice = Number(product.selling_price || 0)
-      const lineTotal = Math.round(qtyToAdd * sellingPrice * 100) / 100
-
-      const newRow = {
-        row_id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        product_id: product.id,
-        product_name: product.product_name,
-        product_code: product.product_code || `FW-${product.id}`,
-        barcode: product.barcode || '',
-        size: sizeNum,
-        available_sizes: product.sizes || [],
-        max_stock: maxStock,
-        quantity: qtyToAdd,
-        selling_price: sellingPrice,
-        total: lineTotal,
-      }
-
-      const updated = [...currentCart, newRow]
-      setCartItems(updated)
-      playBeep('success')
-      setAlertMsg({
-        type: 'success',
-        text: `Added "${product.product_name}" (Size ${sizeNum}) to invoice.`,
-      })
-      return true
+    if (groupIndex === -1 && product.id) {
+      groupIndex = currentCart.findIndex((grp) => grp.product_id === product.id)
     }
+
+    const existingGroup = groupIndex >= 0 ? currentCart[groupIndex] : null
+
+    // Collect available sizes from product
+    let productSizes = []
+    if (Array.isArray(product.sizes) && product.sizes.length > 0) {
+      productSizes = product.sizes
+    } else {
+      productSizes = DEFAULT_SIZES_FALLBACK
+    }
+
+    const defaultPrice = existingGroup
+      ? Number(existingGroup.common_price || product.selling_price || 0)
+      : Number(product.selling_price || 0)
+
+    // Map sizes with initial quantities & rates
+    const sizesState = productSizes.map((s) => {
+      const sizeNum = Number(s.size)
+      const stockQty = Number(s.stock_quantity ?? s.stock ?? 0)
+
+      // Check if this size is already in the existing group in cart
+      const existingSizeObj = existingGroup?.sizes?.find((sz) => Number(sz.size) === sizeNum)
+      const initialQty = existingSizeObj ? existingSizeObj.quantity : 0
+      const initialPrice = existingSizeObj ? Number(existingSizeObj.selling_price) : defaultPrice
+
+      return {
+        size: sizeNum,
+        stock_quantity: stockQty,
+        quantity: initialQty,
+        selling_price: initialPrice,
+        total: Math.round(initialQty * initialPrice * 100) / 100,
+      }
+    })
+
+    setMultiSizeModal({
+      isOpen: true,
+      product,
+      commonPrice: defaultPrice,
+      sizesState,
+      error: '',
+      existingGroupIndex: groupIndex,
+    })
   }
+
+  // Edit Common Wholesale Rate in Modal
+  const handleModalCommonPriceChange = (val) => {
+    const num = Math.max(0, parseFloat(val) || 0)
+    setMultiSizeModal((prev) => ({
+      ...prev,
+      commonPrice: val,
+      sizesState: prev.sizesState.map((s) => ({
+        ...s,
+        selling_price: num,
+        total: Math.round(s.quantity * num * 100) / 100,
+      })),
+    }))
+  }
+
+  // Edit Size Quantity in Modal with Stock Validation
+  const handleModalSizeQtyChange = (sizeNum, val) => {
+    const cleanQty = Math.max(0, parseInt(val, 10) || 0)
+    setMultiSizeModal((prev) => {
+      let error = ''
+      const updatedSizes = prev.sizesState.map((s) => {
+        if (s.size !== sizeNum) return s
+        if (cleanQty > s.stock_quantity && s.stock_quantity > 0) {
+          error = `Size ${sizeNum}: Entered quantity (${cleanQty}) exceeds available stock (${s.stock_quantity}).`
+          return {
+            ...s,
+            quantity: s.stock_quantity,
+            total: Math.round(s.stock_quantity * s.selling_price * 100) / 100,
+          }
+        }
+        return {
+          ...s,
+          quantity: cleanQty,
+          total: Math.round(cleanQty * s.selling_price * 100) / 100,
+        }
+      })
+      return { ...prev, sizesState: updatedSizes, error }
+    })
+  }
+
+  // Step Quantity (+ / -) in Modal
+  const handleModalStepQty = (sizeNum, delta) => {
+    setMultiSizeModal((prev) => {
+      let error = ''
+      const updatedSizes = prev.sizesState.map((s) => {
+        if (s.size !== sizeNum) return s
+        const target = Math.max(0, s.quantity + delta)
+        if (target > s.stock_quantity && s.stock_quantity > 0) {
+          error = `Cannot exceed available stock of ${s.stock_quantity} for Size ${sizeNum}.`
+          return s
+        }
+        return {
+          ...s,
+          quantity: target,
+          total: Math.round(target * s.selling_price * 100) / 100,
+        }
+      })
+      return { ...prev, sizesState: updatedSizes, error }
+    })
+  }
+
+  // Override Individual Size Rate in Modal
+  const handleModalSizePriceChange = (sizeNum, val) => {
+    const num = Math.max(0, parseFloat(val) || 0)
+    setMultiSizeModal((prev) => ({
+      ...prev,
+      sizesState: prev.sizesState.map((s) => {
+        if (s.size !== sizeNum) return s
+        return {
+          ...s,
+          selling_price: num,
+          total: Math.round(s.quantity * num * 100) / 100,
+        }
+      }),
+    }))
+  }
+
+  // Quick Presets in Modal
+  const handleModalPreset = (presetType) => {
+    setMultiSizeModal((prev) => {
+      if (presetType === 'all_one') {
+        const updated = prev.sizesState.map((s) => {
+          if (s.stock_quantity <= 0) return s
+          const qty = 1
+          return {
+            ...s,
+            quantity: qty,
+            total: Math.round(qty * s.selling_price * 100) / 100,
+          }
+        })
+        return { ...prev, sizesState: updated, error: '' }
+      }
+      if (presetType === 'clear') {
+        const updated = prev.sizesState.map((s) => ({
+          ...s,
+          quantity: 0,
+          total: 0,
+        }))
+        return { ...prev, sizesState: updated, error: '' }
+      }
+      return prev
+    })
+  }
+
+  // Commit Modal Sizes to Cart / Invoice
+  const handleCommitModalSizes = () => {
+    const selectedSizes = multiSizeModal.sizesState.filter((s) => s.quantity > 0)
+    if (selectedSizes.length === 0) {
+      setMultiSizeModal((prev) => ({
+        ...prev,
+        error: 'Please enter a quantity for at least one available size before adding to bill.',
+      }))
+      playBeep('error')
+      return
+    }
+
+    const { product, commonPrice, existingGroupIndex } = multiSizeModal
+    const groupSellingPrice = parseFloat(commonPrice) || Number(product.selling_price || 0)
+
+    const groupSizes = selectedSizes.map((s) => ({
+      size: s.size,
+      quantity: s.quantity,
+      selling_price: Number(s.selling_price || groupSellingPrice),
+      max_stock: s.stock_quantity,
+      total: Math.round(s.quantity * Number(s.selling_price || groupSellingPrice) * 100) / 100,
+    }))
+
+    const totalPairsAdded = groupSizes.reduce((acc, s) => acc + s.quantity, 0)
+
+    setCartItems((prev) => {
+      const copy = [...prev]
+      if (existingGroupIndex >= 0 && copy[existingGroupIndex]) {
+        // Update existing product group
+        copy[existingGroupIndex] = {
+          ...copy[existingGroupIndex],
+          product_id: product.id,
+          product_name: product.product_name,
+          product_code: product.product_code || `FW-${product.id}`,
+          barcode: product.barcode || '',
+          common_price: groupSellingPrice,
+          is_expanded: true,
+          available_sizes: product.sizes || [],
+          sizes: groupSizes,
+        }
+        return copy
+      } else {
+        // Check if product already exists in cart under another group
+        const existingIdx = copy.findIndex((grp) => grp.product_id === product.id)
+        if (existingIdx >= 0) {
+          copy[existingIdx] = {
+            ...copy[existingIdx],
+            common_price: groupSellingPrice,
+            is_expanded: true,
+            available_sizes: product.sizes || [],
+            sizes: groupSizes,
+          }
+          return copy
+        } else {
+          // Add new product group
+          const newGroup = {
+            group_id: `grp-${product.id}-${Date.now()}`,
+            product_id: product.id,
+            product_name: product.product_name,
+            product_code: product.product_code || `FW-${product.id}`,
+            barcode: product.barcode || '',
+            common_price: groupSellingPrice,
+            is_expanded: true,
+            available_sizes: product.sizes || [],
+            sizes: groupSizes,
+          }
+          return [...copy, newGroup]
+        }
+      }
+    })
+
+    playBeep('success')
+    setAlertMsg({
+      type: 'success',
+      text: `Added ${totalPairsAdded} pairs of "${product.product_name}" across ${groupSizes.length} sizes to bill.`,
+    })
+    setScannerStatus({
+      type: 'success',
+      text: `Added: ${product.product_name} (${totalPairsAdded} pairs)`,
+    })
+    setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2500)
+
+    setMultiSizeModal({
+      isOpen: false,
+      product: null,
+      commonPrice: 0,
+      sizesState: [],
+      error: '',
+      existingGroupIndex: -1,
+    })
+
+    // Refocus scanner input for next scan
+    setTimeout(() => {
+      scannerInputRef.current?.focus()
+    }, 150)
+  }
+
+  // ---------------------------------------------------------------------------
+  // GROUPED CART TABLE OPERATIONS
+  // ---------------------------------------------------------------------------
 
   // Add Blank Row for Manual Product Selection
   const handleAddManualRow = () => {
-    const blankRow = {
-      row_id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    const blankGroup = {
+      group_id: `grp-manual-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       product_id: null,
       product_name: '',
       product_code: '',
       barcode: '',
-      size: 7,
+      common_price: 0,
+      is_expanded: true,
       available_sizes: DEFAULT_SIZES_FALLBACK,
-      max_stock: 999,
-      quantity: 1,
-      selling_price: 0,
-      total: 0,
+      sizes: [],
     }
-    setCartItems((prev) => [...prev, blankRow])
+    setCartItems((prev) => [...prev, blankGroup])
   }
 
-  // Row Product Selection
-  const handleRowProductSelect = (rowIndex, productId) => {
+  // Manual Row Product Selection -> Opens Multi-Size Modal for chosen model
+  const handleManualRowProductSelect = (groupIndex, productId) => {
     if (!productId) {
-      const updated = [...cartItems]
-      updated[rowIndex] = {
-        ...updated[rowIndex],
-        product_id: null,
-        product_name: '',
-        product_code: '',
-        barcode: '',
-        selling_price: 0,
-        total: 0,
-      }
-      setCartItems(updated)
+      setCartItems((prev) => {
+        const copy = [...prev]
+        copy[groupIndex] = {
+          ...copy[groupIndex],
+          product_id: null,
+          product_name: '',
+          product_code: '',
+          barcode: '',
+          common_price: 0,
+          sizes: [],
+        }
+        return copy
+      })
       return
     }
 
     const prod = products.find((p) => String(p.id) === String(productId))
     if (!prod) return
 
-    const inStockSizes = (prod.sizes || []).filter((s) => Number(s.stock_quantity ?? s.stock ?? 0) > 0)
-    const sizeToUse = inStockSizes.length > 0 ? Number(inStockSizes[0].size) : Number(prod.sizes?.[0]?.size || 7)
-    const sizeObj = (prod.sizes || []).find((s) => Number(s.size) === sizeToUse)
-    const maxStock = sizeObj ? Number(sizeObj.stock_quantity ?? sizeObj.stock ?? 0) : 100
-    const price = Number(prod.selling_price || 0)
-    const qty = cartItems[rowIndex]?.quantity || 1
-
-    const updated = [...cartItems]
-    updated[rowIndex] = {
-      ...updated[rowIndex],
-      product_id: prod.id,
-      product_name: prod.product_name,
-      product_code: prod.product_code || `FW-${prod.id}`,
-      barcode: prod.barcode || '',
-      size: sizeToUse,
-      available_sizes: prod.sizes || [],
-      max_stock: maxStock,
-      selling_price: price,
-      total: Math.round(qty * price * 100) / 100,
-    }
-    setCartItems(updated)
+    // Open multi-size selector for selected product
+    openMultiSizeModal(prod, groupIndex)
   }
 
-  // Row Field Updates (Quantity, Size, Selling Price)
-  const handleUpdateRowField = (rowIndex, field, value) => {
-    const updated = [...cartItems]
-    const item = { ...updated[rowIndex] }
-
-    if (field === 'quantity') {
-      const q = Math.max(1, parseInt(value, 10) || 1)
-      item.quantity = q
-      item.total = Math.round(q * item.selling_price * 100) / 100
-    } else if (field === 'size') {
-      const sz = Number(value)
-      item.size = sz
-      const szObj = (item.available_sizes || []).find((s) => Number(s.size) === sz)
-      item.max_stock = szObj ? Number(szObj.stock_quantity ?? szObj.stock ?? 0) : 100
-    } else if (field === 'selling_price') {
-      const p = Math.max(0, parseFloat(value) || 0)
-      item.selling_price = p
-      item.total = Math.round(item.quantity * p * 100) / 100
-    }
-
-    updated[rowIndex] = item
-    setCartItems(updated)
+  // Toggle Expand / Collapse of Footwear Group
+  const handleToggleExpandGroup = (groupIndex) => {
+    setCartItems((prev) => {
+      const copy = [...prev]
+      copy[groupIndex] = { ...copy[groupIndex], is_expanded: !copy[groupIndex].is_expanded }
+      return copy
+    })
   }
 
-  // Remove Row
-  const handleRemoveRow = (rowIndex) => {
-    setCartItems((prev) => prev.filter((_, idx) => idx !== rowIndex))
+  // Update Group Common Wholesale Price (Updates All Sizes in Group)
+  const handleUpdateGroupCommonPrice = (groupIndex, newPrice) => {
+    const p = Math.max(0, parseFloat(newPrice) || 0)
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const grp = { ...copy[groupIndex] }
+      grp.common_price = p
+      grp.sizes = (grp.sizes || []).map((sz) => ({
+        ...sz,
+        selling_price: p,
+        total: Math.round(sz.quantity * p * 100) / 100,
+      }))
+      copy[groupIndex] = grp
+      return copy
+    })
+  }
+
+  // Update Individual Size Quantity in Group (with stock validation)
+  const handleUpdateSizeQtyInGroup = (groupIndex, sizeIndex, val) => {
+    const q = Math.max(1, parseInt(val, 10) || 1)
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const grp = { ...copy[groupIndex] }
+      const szs = [...grp.sizes]
+      const sz = { ...szs[sizeIndex] }
+
+      if (q > sz.max_stock && sz.max_stock > 0) {
+        setAlertMsg({
+          type: 'error',
+          text: `Cannot exceed available stock (${sz.max_stock}) for Size ${sz.size}.`,
+        })
+        sz.quantity = sz.max_stock
+      } else {
+        sz.quantity = q
+      }
+
+      sz.total = Math.round(sz.quantity * sz.selling_price * 100) / 100
+      szs[sizeIndex] = sz
+      grp.sizes = szs
+      copy[groupIndex] = grp
+      return copy
+    })
+  }
+
+  // Override Individual Size Selling Price in Group
+  const handleUpdateSizePriceInGroup = (groupIndex, sizeIndex, val) => {
+    const p = Math.max(0, parseFloat(val) || 0)
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const grp = { ...copy[groupIndex] }
+      const szs = [...grp.sizes]
+      const sz = { ...szs[sizeIndex] }
+      sz.selling_price = p
+      sz.total = Math.round(sz.quantity * p * 100) / 100
+      szs[sizeIndex] = sz
+      grp.sizes = szs
+      copy[groupIndex] = grp
+      return copy
+    })
+  }
+
+  // Remove Individual Size from Group
+  const handleRemoveSizeFromGroup = (groupIndex, sizeIndex) => {
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const grp = { ...copy[groupIndex] }
+      const szs = grp.sizes.filter((_, idx) => idx !== sizeIndex)
+      if (szs.length === 0) {
+        // If all sizes removed, remove whole footwear group
+        return copy.filter((_, idx) => idx !== groupIndex)
+      }
+      grp.sizes = szs
+      copy[groupIndex] = grp
+      return copy
+    })
+  }
+
+  // Remove Entire Footwear Group
+  const handleRemoveGroup = (groupIndex) => {
+    setCartItems((prev) => prev.filter((_, idx) => idx !== groupIndex))
   }
 
   // Clear All
@@ -450,23 +725,33 @@ export default function BillingPage() {
         return
       }
 
-      const added = addProductToTable(found, null, 1)
-      if (added) {
-        setScannerStatus({ type: 'success', text: `Added: ${found.product_name}` })
-        setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2000)
-      }
+      // Open Multi-Size Wholesale Selector Modal for single-scan, multi-size billing
+      openMultiSizeModal(found)
+      playBeep('success')
+      setScannerStatus({ type: 'success', text: `Loaded: ${found.product_name}` })
+      setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2000)
     } finally {
       isProcessingScanRef.current = false
-      // Refocus scanner input for continuous consecutive scanning
+      // Refocus scanner input
       setTimeout(() => {
-        scannerInputRef.current?.focus()
+        if (!multiSizeModal.isOpen) {
+          scannerInputRef.current?.focus()
+        }
       }, 50)
     }
   }
 
-  // Keyboard shortcut listener (F9 for Save & Print, and global continuous barcode scanning redirect)
+  // Keyboard shortcut listener (F9 for Save & Print, Esc for modal, and continuous scanner redirect)
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // Escape: Close Multi-Size Modal
+      if (e.key === 'Escape' && multiSizeModal.isOpen) {
+        e.preventDefault()
+        setMultiSizeModal((prev) => ({ ...prev, isOpen: false }))
+        setTimeout(() => scannerInputRef.current?.focus(), 100)
+        return
+      }
+
       // F9: Save & Print Bill
       if (e.key === 'F9') {
         e.preventDefault()
@@ -486,8 +771,8 @@ export default function BillingPage() {
           activeEl.isContentEditable)
 
       if (!isFormElement) {
-        // If a modal dialog is open, do not redirect keys
-        if (showAddCustomerModal || previewModalBill || completedInvoice) return
+        // If any modal dialog is open, do not redirect keys
+        if (showAddCustomerModal || previewModalBill || completedInvoice || multiSizeModal.isOpen) return
 
         // Printable key received from keyboard or barcode scanner
         if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -500,10 +785,32 @@ export default function BillingPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [cartItems, isSavingInvoice, showAddCustomerModal, previewModalBill, completedInvoice])
+  }, [cartItems, isSavingInvoice, showAddCustomerModal, previewModalBill, completedInvoice, multiSizeModal.isOpen])
 
-  // Calculations Summary (Direct Price * Quantity without Discount or GST)
-  const validItems = useMemo(() => cartItems.filter((it) => it.product_id), [cartItems])
+  // Calculations Summary (Direct Price * Quantity flattened from all grouped sizes)
+  const validItems = useMemo(() => {
+    const flat = []
+    for (const group of cartItems) {
+      if (!group.product_id) continue
+      for (const sz of (group.sizes || [])) {
+        if (sz.quantity > 0) {
+          flat.push({
+            product_id: group.product_id,
+            product_name: group.product_name,
+            product_code: group.product_code,
+            barcode: group.barcode,
+            size: sz.size,
+            quantity: sz.quantity,
+            selling_price: sz.selling_price,
+            total: Math.round(sz.quantity * sz.selling_price * 100) / 100,
+            max_stock: sz.max_stock,
+            group_id: group.group_id,
+          })
+        }
+      }
+    }
+    return flat
+  }, [cartItems])
   const subtotal = useMemo(
     () => validItems.reduce((acc, it) => acc + (it.quantity * it.selling_price), 0),
     [validItems]
@@ -561,6 +868,15 @@ export default function BillingPage() {
   // Primary Action: SAVE & PRINT BILL
   const handleSaveAndPrintBill = async () => {
     if (isSavingInvoice) return
+
+    if (isBillingSuspended) {
+      playBeep('error')
+      setAlertMsg({
+        type: 'error',
+        text: `Billing operations are currently SUSPENDED for "${user?.shop_name || 'this shop'}". New invoice checkout is disabled.`,
+      })
+      return
+    }
 
     // 1. Validations
     if (validItems.length === 0) {
@@ -625,14 +941,23 @@ export default function BillingPage() {
       }
 
       // Save to database
+      const activeToken = token || sessionStorage.getItem('swamidatt_erp_token')
       const res = await fetch(`${API_BASE_URL}/billing/checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+        },
         body: JSON.stringify(checkoutPayload),
       })
 
       const data = await res.json()
-      if (!res.ok) throw new Error(data.message || 'Checkout failed')
+      if (!res.ok) {
+        if (res.status === 403 && data.billing_suspended && refreshSession) {
+          refreshSession()
+        }
+        throw new Error(data.message || 'Checkout failed')
+      }
 
       playBeep('success')
       const savedBill = data.bill
@@ -747,6 +1072,44 @@ export default function BillingPage() {
   // =========================================================================
   return (
     <div className="desktop-billing-wrapper">
+      {isBillingSuspended && (
+        <div style={{
+          background: '#fef2f2',
+          border: '1px solid #fca5a5',
+          borderLeft: '6px solid #dc2626',
+          borderRadius: '8px',
+          padding: '14px 20px',
+          marginBottom: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          color: '#991b1b',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '1.5rem' }}>⚠️</span>
+            <div>
+              <strong style={{ fontSize: '1rem', display: 'block', color: '#b91c1c' }}>
+                Billing Operations Suspended by Administrator
+              </strong>
+              <span style={{ fontSize: '0.86rem', color: '#7f1d1d' }}>
+                New invoice generation and checkout are currently disabled for <strong>{user?.shop_name || 'this shop'}</strong>. Please contact your system administrator to resume billing.
+              </span>
+            </div>
+          </div>
+          <span style={{
+            background: '#dc2626',
+            color: '#ffffff',
+            fontWeight: 800,
+            fontSize: '0.75rem',
+            padding: '6px 14px',
+            borderRadius: '20px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em'
+          }}>
+            Suspended
+          </span>
+        </div>
+      )}
       {/* -------------------------------------------------------------------
           1. TOP SECTION CARD: Customer and Invoice Details
           - Title & Store Badge
@@ -936,15 +1299,16 @@ export default function BillingPage() {
             <span>+ Add Row</span>
           </button>
           <span className="table-items-count-pill">
-            {validItems.length} Products ({validItems.reduce((acc, it) => acc + it.quantity, 0)} Pairs)
+            {cartItems.filter((g) => g.product_id).length} Models ({validItems.reduce((acc, it) => acc + it.quantity, 0)} Pairs)
           </span>
         </div>
       </div>
 
       {/* -------------------------------------------------------------------
-          3. UNIFIED PRODUCT BILLING TABLE CARD
-          - Clean 8 columns without Discount or GST
-          - Matching scanned items appear immediately
+          3. GROUPED PRODUCT BILLING TABLE CARD
+          - Footwear models grouped with expandable size-wise breakdown
+          - Common wholesale price editing & individual size override
+          - Automatic real-time recalculation of pairs, amounts, and totals
           ------------------------------------------------------------------- */}
       <div className="billing-table-card no-print">
         <div className="desktop-billing-table-wrap">
@@ -952,13 +1316,13 @@ export default function BillingPage() {
             <thead>
               <tr>
                 <th style={{ width: '44px', textAlign: 'center' }}>Sr.</th>
-                <th style={{ minWidth: '260px' }}>Product / Footwear Name</th>
-                <th style={{ width: '140px' }}>Barcode / SKU</th>
-                <th style={{ width: '90px', textAlign: 'center' }}>Qty</th>
-                <th style={{ width: '130px', textAlign: 'center' }}>Size / Unit</th>
-                <th style={{ width: '130px', textAlign: 'right' }}>Price/Unit (₹)</th>
-                <th style={{ width: '140px', textAlign: 'right' }}>Final Amount</th>
-                <th style={{ width: '48px', textAlign: 'center' }}>Action</th>
+                <th style={{ minWidth: '240px' }}>Product / Footwear Model</th>
+                <th style={{ width: '130px' }}>Barcode / SKU</th>
+                <th style={{ width: '110px', textAlign: 'center' }}>Total Pairs</th>
+                <th style={{ minWidth: '200px' }}>Sizes Breakdown</th>
+                <th style={{ width: '130px', textAlign: 'right' }}>Unit Rate (₹)</th>
+                <th style={{ width: '130px', textAlign: 'right' }}>Total Amount</th>
+                <th style={{ width: '110px', textAlign: 'center' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -975,102 +1339,225 @@ export default function BillingPage() {
                   </td>
                 </tr>
               ) : (
-                cartItems.map((row, idx) => (
-                  <tr key={row.row_id || idx}>
-                    {/* 1. Sr. No. */}
-                    <td style={{ textAlign: 'center', color: '#64748b', fontWeight: 600 }}>
-                      {idx + 1}
-                    </td>
+                cartItems.map((grp, grpIdx) => {
+                  const isManual = !grp.product_id
+                  const groupPairs = (grp.sizes || []).reduce((acc, s) => acc + Number(s.quantity || 0), 0)
+                  const groupTotal = (grp.sizes || []).reduce((acc, s) => acc + Number(s.total || 0), 0)
 
-                    {/* 2. Product Name (Select / Search) */}
-                    <td>
-                      <select
-                        className="tbl-cell-select"
-                        value={row.product_id || ''}
-                        onChange={(e) => handleRowProductSelect(idx, e.target.value)}
-                      >
-                        <option value="">-- Choose Footwear Model --</option>
-                        {products.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.product_name} ({p.product_code || `FW-${p.id}`}) - ₹{p.selling_price}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
+                  return (
+                    <Fragment key={grp.group_id || grpIdx}>
+                      {/* Main Footwear Group Header Row */}
+                      <tr className="tbl-group-header-row">
+                        {/* 1. Sr. No. */}
+                        <td style={{ textAlign: 'center', color: '#334155', fontWeight: 700 }}>
+                          {grpIdx + 1}
+                        </td>
 
-                    {/* 3. Barcode / SKU */}
-                    <td>
-                      <span className="tbl-sku-badge" title={row.barcode ? `Barcode: ${row.barcode}` : 'SKU'}>
-                        {row.product_code || row.barcode || '—'}
-                      </span>
-                    </td>
+                        {/* 2. Product Name / Footwear Model */}
+                        <td className="tbl-group-accent">
+                          {isManual ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <select
+                                className="tbl-cell-select"
+                                value=""
+                                onChange={(e) => handleManualRowProductSelect(grpIdx, e.target.value)}
+                              >
+                                <option value="">-- Choose Footwear Model --</option>
+                                {products.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.product_name} ({p.product_code || `FW-${p.id}`}) - ₹{p.selling_price}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : (
+                            <div className="tbl-group-title-wrap">
+                              <button
+                                type="button"
+                                className="tbl-group-chevron"
+                                onClick={() => handleToggleExpandGroup(grpIdx)}
+                                title={grp.is_expanded ? 'Collapse size breakdown' : 'Expand size breakdown'}
+                              >
+                                {grp.is_expanded ? '▼' : '▶'}
+                              </button>
+                              <span className="tbl-group-name">{grp.product_name}</span>
+                              <span className="tbl-group-badge">
+                                {grp.sizes?.length || 0} {(grp.sizes?.length || 0) === 1 ? 'size' : 'sizes'}
+                              </span>
+                            </div>
+                          )}
+                        </td>
 
-                    {/* 4. Quantity */}
-                    <td style={{ textAlign: 'center' }}>
-                      <div className="tbl-qty-wrap">
-                        <input
-                          type="number"
-                          min="1"
-                          max={row.max_stock > 0 ? row.max_stock : 999}
-                          className="tbl-qty-input"
-                          value={row.quantity}
-                          onChange={(e) => handleUpdateRowField(idx, 'quantity', e.target.value)}
-                        />
-                      </div>
-                    </td>
+                        {/* 3. Barcode / SKU */}
+                        <td>
+                          <span className="tbl-sku-badge" title={grp.barcode ? `Barcode: ${grp.barcode}` : 'SKU'}>
+                            {grp.product_code || grp.barcode || '—'}
+                          </span>
+                        </td>
 
-                    {/* 5. Unit / Size */}
-                    <td style={{ textAlign: 'center' }}>
-                      <select
-                        className="tbl-cell-select"
-                        style={{ textAlign: 'center' }}
-                        value={row.size || 7}
-                        onChange={(e) => handleUpdateRowField(idx, 'size', e.target.value)}
-                      >
-                        {(row.available_sizes && row.available_sizes.length > 0
-                          ? row.available_sizes
-                          : DEFAULT_SIZES_FALLBACK
-                        ).map((s) => (
-                          <option key={s.size} value={s.size}>
-                            Size {s.size} {s.stock_quantity !== undefined ? `(${s.stock_quantity})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
+                        {/* 4. Total Pairs in Group */}
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="tbl-group-badge" style={{ background: '#dbeafe', color: '#1e40af', fontWeight: 800 }}>
+                            {groupPairs} {groupPairs === 1 ? 'pair' : 'pairs'}
+                          </span>
+                        </td>
 
-                    {/* 6. Price per Unit */}
-                    <td style={{ textAlign: 'right' }}>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        className="tbl-cell-input"
-                        style={{ textAlign: 'right', fontWeight: 600 }}
-                        value={row.selling_price}
-                        onChange={(e) => handleUpdateRowField(idx, 'selling_price', e.target.value)}
-                      />
-                    </td>
+                        {/* 5. Sizes Breakdown Badges */}
+                        <td>
+                          <div className="tbl-group-sizes-summary">
+                            {grp.sizes && grp.sizes.length > 0 ? (
+                              grp.sizes.map((sz) => (
+                                <span key={sz.size} className="tbl-size-pill">
+                                  Sz {sz.size}: <b>{sz.quantity}</b>
+                                </span>
+                              ))
+                            ) : (
+                              <span style={{ fontSize: '0.78rem', color: '#94a3b8', fontStyle: 'italic' }}>
+                                No sizes selected
+                              </span>
+                            )}
+                          </div>
+                        </td>
 
-                    {/* 7. Final Amount (Price * Qty) */}
-                    <td style={{ textAlign: 'right' }}>
-                      <span className="tbl-row-amount">
-                        ₹{Number(row.total || 0).toFixed(2)}
-                      </span>
-                    </td>
+                        {/* 6. Wholesale Common Rate (Editable) */}
+                        <td style={{ textAlign: 'right' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '0.78rem', color: '#64748b' }}>₹</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              className="tbl-cell-input"
+                              style={{ width: '85px', textAlign: 'right', fontWeight: 700, color: '#1e3a8a' }}
+                              value={grp.common_price}
+                              onChange={(e) => handleUpdateGroupCommonPrice(grpIdx, e.target.value)}
+                              disabled={isManual}
+                              title="Wholesale common rate for this footwear (updates all sizes)"
+                            />
+                          </div>
+                        </td>
 
-                    {/* 8. Action (Remove) */}
-                    <td style={{ textAlign: 'center' }}>
-                      <button
-                        type="button"
-                        className="tbl-remove-btn"
-                        onClick={() => handleRemoveRow(idx)}
-                        title="Remove product"
-                      >
-                        <TrashIcon size={14} />
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                        {/* 7. Group Final Amount */}
+                        <td style={{ textAlign: 'right' }}>
+                          <span className="tbl-row-amount" style={{ color: '#0f172a', fontWeight: 800 }}>
+                            ₹{groupTotal.toFixed(2)}
+                          </span>
+                        </td>
+
+                        {/* 8. Action Buttons */}
+                        <td style={{ textAlign: 'center' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                            {!isManual && (
+                              <button
+                                type="button"
+                                className="tbl-btn-add-sizes"
+                                onClick={() => {
+                                  const prod = products.find((p) => p.id === grp.product_id) || grp
+                                  openMultiSizeModal(prod, grpIdx)
+                                }}
+                                title="Add or edit size quantities and wholesale rates"
+                              >
+                                + Sizes
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="tbl-remove-btn"
+                              onClick={() => handleRemoveGroup(grpIdx)}
+                              title="Remove entire footwear model"
+                            >
+                              <TrashIcon size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+
+                      {/* Sub-rows for each size (Rendered when expanded) */}
+                      {grp.is_expanded && !isManual && (grp.sizes || []).map((sz, szIdx) => (
+                        <tr key={`${grp.group_id}-sz-${sz.size}`} className="tbl-subrow">
+                          {/* Indent arrow */}
+                          <td className="tbl-subrow-indent">↳</td>
+
+                          {/* Size variant label */}
+                          <td style={{ paddingLeft: '32px' }}>
+                            <span style={{ fontWeight: 600, color: '#334155', fontSize: '0.84rem' }}>
+                              Size {sz.size} Variant
+                            </span>
+                            {sz.max_stock !== undefined && (
+                              <span style={{ fontSize: '0.72rem', color: '#64748b', marginLeft: '8px' }}>
+                                (Avail: {sz.max_stock})
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Barcode / SKU suffix */}
+                          <td>
+                            <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                              {grp.product_code || grp.barcode || '—'}-{sz.size}
+                            </span>
+                          </td>
+
+                          {/* Quantity input */}
+                          <td style={{ textAlign: 'center' }}>
+                            <div className="tbl-qty-wrap" style={{ margin: '0 auto' }}>
+                              <input
+                                type="number"
+                                min="1"
+                                max={sz.max_stock > 0 ? sz.max_stock : 999}
+                                className="tbl-qty-input"
+                                value={sz.quantity}
+                                onChange={(e) => handleUpdateSizeQtyInGroup(grpIdx, szIdx, e.target.value)}
+                              />
+                            </div>
+                          </td>
+
+                          {/* Size badge */}
+                          <td style={{ textAlign: 'center' }}>
+                            <span className="stock-indicator-badge in-stock">
+                              Size {sz.size}
+                            </span>
+                          </td>
+
+                          {/* Selling price for this size */}
+                          <td style={{ textAlign: 'right' }}>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <span style={{ fontSize: '0.78rem', color: '#64748b' }}>₹</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="tbl-cell-input"
+                                style={{ width: '80px', textAlign: 'right', fontWeight: 600 }}
+                                value={sz.selling_price}
+                                onChange={(e) => handleUpdateSizePriceInGroup(grpIdx, szIdx, e.target.value)}
+                                title={`Override rate for Size ${sz.size}`}
+                              />
+                            </div>
+                          </td>
+
+                          {/* Subrow line total */}
+                          <td style={{ textAlign: 'right' }}>
+                            <span style={{ fontWeight: 700, color: '#334155', fontSize: '0.86rem' }}>
+                              ₹{Number(sz.total || 0).toFixed(2)}
+                            </span>
+                          </td>
+
+                          {/* Subrow remove button */}
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              className="tbl-subrow-remove"
+                              onClick={() => handleRemoveSizeFromGroup(grpIdx, szIdx)}
+                              title={`Remove Size ${sz.size}`}
+                            >
+                              <CloseIcon size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  )
+                })
               )}
             </tbody>
           </table>
@@ -1251,11 +1738,12 @@ export default function BillingPage() {
             type="button"
             className="btn-save-print-primary"
             onClick={handleSaveAndPrintBill}
-            disabled={isSavingInvoice || validItems.length === 0}
-            title="Save invoice to database and open print dialog (F9)"
+            disabled={isSavingInvoice || validItems.length === 0 || isBillingSuspended}
+            style={isBillingSuspended ? { background: '#ef4444', borderColor: '#dc2626', cursor: 'not-allowed', opacity: 0.8 } : {}}
+            title={isBillingSuspended ? "Billing suspended by administrator" : "Save invoice to database and open print dialog (F9)"}
           >
             <PrintIcon size={18} />
-            <span>{isSavingInvoice ? 'Saving & Printing...' : 'Save & Print Bill (F9)'}</span>
+            <span>{isBillingSuspended ? 'Billing Suspended' : isSavingInvoice ? 'Saving & Printing...' : 'Save & Print Bill (F9)'}</span>
           </button>
         </div>
       </div>
@@ -1348,6 +1836,251 @@ export default function BillingPage() {
           onClose={() => setCompletedInvoice(null)}
           onSaveBill={handleSaveAndPrintBill}
         />
+      )}
+
+      {/* -------------------------------------------------------------------
+          4. MULTI-SIZE WHOLESALE QUANTITY & RATE SELECTOR MODAL
+          - Opens on single barcode scan or "+ Sizes" button
+          - Shows all available sizes with live real-time stock
+          - Allows multi-size quantity entry in one single operation
+          - Common wholesale price editing & size rate override
+          - Validates stock per size and prevents exceeding stock
+          - Commits all sizes to bill in one click
+          ------------------------------------------------------------------- */}
+      {multiSizeModal.isOpen && multiSizeModal.product && (
+        <div
+          className="multi-size-modal-overlay"
+          onClick={() => {
+            setMultiSizeModal((prev) => ({ ...prev, isOpen: false }))
+            setTimeout(() => scannerInputRef.current?.focus(), 100)
+          }}
+        >
+          <div className="multi-size-modal-card" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="multi-size-modal-header">
+              <div>
+                <h3 className="multi-size-modal-title">
+                  <BarcodeNavIcon size={20} color="#2563eb" />
+                  <span>Multi-Size Wholesale Selector</span>
+                </h3>
+                <div className="multi-size-modal-subtitle">
+                  <strong style={{ color: '#0f172a' }}>{multiSizeModal.product.product_name}</strong>
+                  <span>•</span>
+                  <span>SKU: {multiSizeModal.product.product_code || `FW-${multiSizeModal.product.id}`}</span>
+                  {multiSizeModal.product.barcode && (
+                    <>
+                      <span>•</span>
+                      <span>Barcode: {multiSizeModal.product.barcode}</span>
+                    </>
+                  )}
+                  <span>•</span>
+                  <span style={{ color: '#059669', fontWeight: 700 }}>
+                    Total In Stock: {multiSizeModal.sizesState.reduce((a, s) => a + s.stock_quantity, 0)} pairs
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-close"
+                onClick={() => {
+                  setMultiSizeModal((prev) => ({ ...prev, isOpen: false }))
+                  setTimeout(() => scannerInputRef.current?.focus(), 100)
+                }}
+              >
+                <CloseIcon size={14} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="multi-size-modal-body">
+              {/* Wholesale Common Rate Control */}
+              <div className="multi-size-wholesale-bar">
+                <div className="multi-size-wholesale-label">
+                  <span>Wholesale / Common Unit Rate (₹)</span>
+                  <small style={{ color: '#475569', fontWeight: 500 }}>
+                    Enter common rate for all sizes, or override individual size rates below
+                  </small>
+                </div>
+                <div className="multi-size-wholesale-input-wrap">
+                  <span style={{ fontWeight: 700, color: '#1e40af' }}>₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="multi-size-wholesale-input"
+                    value={multiSizeModal.commonPrice}
+                    onChange={(e) => handleModalCommonPriceChange(e.target.value)}
+                    placeholder="0.00"
+                  />
+                  <button
+                    type="button"
+                    className="btn-apply-all-rates"
+                    onClick={() => handleModalCommonPriceChange(multiSizeModal.commonPrice)}
+                    title="Apply this common rate across all sizes"
+                  >
+                    Apply to All
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Presets Bar */}
+              <div className="multi-size-presets-bar">
+                <span>Quick Actions:</span>
+                <button
+                  type="button"
+                  className="btn-preset-action"
+                  onClick={() => handleModalPreset('all_one')}
+                >
+                  +1 Pair to All In-Stock Sizes
+                </button>
+                <button
+                  type="button"
+                  className="btn-preset-action"
+                  onClick={() => handleModalPreset('clear')}
+                >
+                  Clear All Quantities
+                </button>
+              </div>
+
+              {/* Validation error if any */}
+              {multiSizeModal.error && (
+                <div style={{ color: '#dc2626', fontSize: '0.82rem', fontWeight: 600, background: '#fee2e2', padding: '8px 12px', borderRadius: '6px', border: '1px solid #fca5a5' }}>
+                  {multiSizeModal.error}
+                </div>
+              )}
+
+              {/* Multi-Size Table */}
+              <table className="multi-size-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: '80px' }}>Shoe Size</th>
+                    <th style={{ width: '130px' }}>Available Stock</th>
+                    <th style={{ width: '180px', textAlign: 'center' }}>Billing Quantity</th>
+                    <th style={{ width: '130px', textAlign: 'right' }}>Unit Rate (₹)</th>
+                    <th style={{ width: '120px', textAlign: 'right' }}>Total (₹)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {multiSizeModal.sizesState.map((s, idx) => {
+                    const isOutOfStock = s.stock_quantity <= 0
+                    return (
+                      <tr key={s.size} style={isOutOfStock ? { opacity: 0.6, background: '#f8fafc' } : {}}>
+                        {/* Size */}
+                        <td className="size-badge-col">
+                          Size {s.size}
+                        </td>
+
+                        {/* Available Stock */}
+                        <td>
+                          {isOutOfStock ? (
+                            <span className="stock-indicator-badge out-of-stock">
+                              Out of Stock (0)
+                            </span>
+                          ) : (
+                            <span className="stock-indicator-badge in-stock">
+                              {s.stock_quantity} available
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Quantity Control */}
+                        <td style={{ textAlign: 'center' }}>
+                          <div className="multi-size-qty-control">
+                            <button
+                              type="button"
+                              className="btn-qty-step"
+                              disabled={isOutOfStock || s.quantity <= 0}
+                              onClick={() => handleModalStepQty(s.size, -1)}
+                            >
+                              -
+                            </button>
+                            <input
+                              ref={idx === 0 ? modalFirstInputRef : null}
+                              type="number"
+                              min="0"
+                              max={s.stock_quantity > 0 ? s.stock_quantity : 0}
+                              disabled={isOutOfStock}
+                              className={`multi-size-qty-input ${s.quantity > 0 ? 'has-qty' : ''}`}
+                              value={s.quantity === 0 ? '' : s.quantity}
+                              onChange={(e) => handleModalSizeQtyChange(s.size, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  handleCommitModalSizes()
+                                }
+                              }}
+                              placeholder="0"
+                            />
+                            <button
+                              type="button"
+                              className="btn-qty-step"
+                              disabled={isOutOfStock || s.quantity >= s.stock_quantity}
+                              onClick={() => handleModalStepQty(s.size, 1)}
+                            >
+                              +
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* Unit Rate */}
+                        <td style={{ textAlign: 'right' }}>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            className="multi-size-rate-input"
+                            value={s.selling_price}
+                            onChange={(e) => handleModalSizePriceChange(s.size, e.target.value)}
+                            disabled={isOutOfStock}
+                          />
+                        </td>
+
+                        {/* Line Total */}
+                        <td className="multi-size-line-total">
+                          ₹{s.total.toFixed(2)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="multi-size-modal-footer">
+              <div className="multi-size-footer-summary">
+                <span>
+                  Selected Pairs: <strong className="footer-summary-pairs">{multiSizeModal.sizesState.reduce((a, s) => a + s.quantity, 0)}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  Product Total: <strong className="footer-summary-total">₹{multiSizeModal.sizesState.reduce((a, s) => a + s.total, 0).toFixed(2)}</strong>
+                </span>
+              </div>
+
+              <div className="multi-size-footer-actions">
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  onClick={() => {
+                    setMultiSizeModal((prev) => ({ ...prev, isOpen: false }))
+                    setTimeout(() => scannerInputRef.current?.focus(), 100)
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-add-sizes-primary"
+                  onClick={handleCommitModalSizes}
+                >
+                  <CheckIcon size={14} />
+                  <span>Add Selected Sizes ({multiSizeModal.sizesState.reduce((a, s) => a + s.quantity, 0)} Pairs)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

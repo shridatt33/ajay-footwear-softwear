@@ -69,13 +69,6 @@ export default function LoginPage() {
     }
   }
 
-  const fillQuickCredentials = (u, p) => {
-    setUsername(u)
-    setPassword(p)
-    setErrors({ username: '', password: '' })
-    setAuthError('')
-  }
-
   if (isLoading) {
     return (
       <div className="login-page-container">
@@ -234,27 +227,6 @@ export default function LoginPage() {
               <span>Login to Dashboard</span>
             )}
           </button>
-
-          {/* Quick Credential Helper Pill for Shop Admin */}
-          <div className="login-credential-help">
-            <span>Default terminal access:</span>
-            <button
-              type="button"
-              style={{
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                color: '#285CF5',
-                cursor: 'pointer',
-                fontWeight: 600,
-                textDecoration: 'underline',
-                fontSize: '0.78rem',
-              }}
-              onClick={() => fillQuickCredentials('admin', 'admin123')}
-            >
-              Fill admin credentials
-            </button>
-          </div>
         </form>
 
         {/* Small Footer */}
