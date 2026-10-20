@@ -1,4 +1,4 @@
-export const API_BASE_URL = 'http://127.0.0.1:5000/api'
+export const API_BASE_URL = 'https://swamidatt-footwear-api.onrender.com/api'
 export const SHOP_INFO = {
   name: 'SWAMIDATT FOOTWEAR',
   tagline: 'Retail Footwear & Accessories',
