@@ -11,7 +11,7 @@ export default function SettingsPage() {
   const [savedMsg, setSavedMsg] = useState(false)
 
   useEffect(() => {
-    fetch('http://127.0.0.1:5000/api/health')
+    fetch(`${API_BASE_URL}/health`)
       .then((r) => r.json())
       .then((d) => setHealthStatus(d))
       .catch(() => setHealthStatus({ status: 'offline' }))
