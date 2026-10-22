@@ -743,11 +743,10 @@ export default function ProductsPage() {
             <div className="printable-stickers-grid printable-area">
               {Array.from({ length: stickerCopies }).map((_, i) => (
                 <div key={i} className="thermal-sticker-label">
-                  <div className="sticker-shop">SWAMIDATT FOOTWEAR</div>
                   <div className="sticker-prod-name">{printingBarcodeProduct.product_name}</div>
                   <div className="sticker-code">{printingBarcodeProduct.product_code}</div>
-                  <BarcodeDisplay value={printingBarcodeProduct.barcode} width={1.6} height={38} fontSize={10} />
-                  <div className="sticker-price">MRP: ₹{Number(printingBarcodeProduct.selling_price).toFixed(2)}</div>
+                  <BarcodeDisplay value={printingBarcodeProduct.barcode} width={1.35} height={28} fontSize={9} margin={1} textMargin={1} />
+                  <div className="sticker-price">MRP: ₹{Number(printingBarcodeProduct.purchase_price ?? printingBarcodeProduct.cost_price ?? 0).toFixed(2)}</div>
                 </div>
               ))}
             </div>

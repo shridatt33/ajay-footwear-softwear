@@ -725,10 +725,78 @@ export default function BillingPage() {
         return
       }
 
-      // Open Multi-Size Wholesale Selector Modal for single-scan, multi-size billing
-      openMultiSizeModal(found)
+      // Automatically add product to cart using Selling Price (₹) as the billing unit price
+      const unitSellingPrice = Number(found.selling_price || 0)
+
+      let defaultSizeNum = 7
+      let maxStock = 999
+      if (Array.isArray(found.sizes) && found.sizes.length > 0) {
+        const inStockSize = found.sizes.find((s) => Number(s.stock_quantity ?? s.stock ?? 0) > 0) || found.sizes[0]
+        defaultSizeNum = Number(inStockSize.size || 7)
+        maxStock = Number(inStockSize.stock_quantity ?? inStockSize.stock ?? 999)
+      }
+
+      setCartItems((prev) => {
+        const copy = [...prev]
+        const existingIdx = copy.findIndex((grp) => grp.product_id === found.id)
+
+        if (existingIdx >= 0) {
+          const grp = { ...copy[existingIdx] }
+          const sizes = [...(grp.sizes || [])]
+          const sizeIdx = sizes.findIndex((s) => Number(s.size) === defaultSizeNum)
+
+          if (sizeIdx >= 0) {
+            const currentSize = sizes[sizeIdx]
+            const newQty = currentSize.quantity + 1
+            sizes[sizeIdx] = {
+              ...currentSize,
+              quantity: newQty,
+              selling_price: unitSellingPrice,
+              total: Math.round(newQty * unitSellingPrice * 100) / 100,
+            }
+          } else {
+            sizes.push({
+              size: defaultSizeNum,
+              quantity: 1,
+              selling_price: unitSellingPrice,
+              max_stock: maxStock,
+              total: unitSellingPrice,
+            })
+          }
+
+          grp.common_price = unitSellingPrice
+          grp.sizes = sizes
+          copy[existingIdx] = grp
+        } else {
+          copy.push({
+            group_id: `grp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            product_id: found.id,
+            product_name: found.product_name,
+            product_code: found.product_code || `FW-${found.id}`,
+            barcode: found.barcode,
+            common_price: unitSellingPrice,
+            is_expanded: true,
+            available_sizes: found.sizes || DEFAULT_SIZES_FALLBACK,
+            sizes: [
+              {
+                size: defaultSizeNum,
+                quantity: 1,
+                selling_price: unitSellingPrice,
+                max_stock: maxStock,
+                total: unitSellingPrice,
+              },
+            ],
+          })
+        }
+        return copy
+      })
+
       playBeep('success')
-      setScannerStatus({ type: 'success', text: `Loaded: ${found.product_name}` })
+      setAlertMsg({
+        type: 'success',
+        text: `Added "${found.product_name}" to bill at Selling Price ₹${unitSellingPrice.toFixed(2)}.`,
+      })
+      setScannerStatus({ type: 'success', text: `Added: ${found.product_name} (₹${unitSellingPrice.toFixed(2)})` })
       setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2000)
     } finally {
       isProcessingScanRef.current = false

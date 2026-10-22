@@ -105,6 +105,7 @@ def serialize_product(product_row, sizes_list):
         "category_name": cat_name or "Unassigned",
         "selling_price": float(price),
         "purchase_price": float(pur_price or 0.0),
+        "cost_price": float(pur_price or 0.0),
         "description": desc or "",
         "barcode": str(barcode),
         "status": status or "active",

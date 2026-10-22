@@ -1,20 +1,27 @@
 import { useEffect, useState } from 'react'
-import { API_BASE_URL, SHOP_INFO } from '../config'
+import { API_BASE_URL } from '../config'
 import BarcodeDisplay from '../components/BarcodeDisplay'
 import EmptyState from '../components/EmptyState'
 import {
-  BarcodeNavIcon,
   SearchIcon,
   PrintIcon,
+  DownloadIcon,
 } from '../components/Icons'
+import {
+  STICKER_FORMATS,
+  DEFAULT_STICKER_FORMAT_ID,
+} from '../utils/stickerFormats'
+import { generateBarcodeStickersPdf } from '../utils/barcodePdfGenerator'
 
 export default function BarcodesPage() {
   const [products, setProducts] = useState([])
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [labelCopies, setLabelCopies] = useState(8)
-  const [labelFormat, setLabelFormat] = useState('box') // 'box' (50x25mm), 'shelf' (small)
+  const [labelFormat, setLabelFormat] = useState(DEFAULT_STICKER_FORMAT_ID)
   const [searchTerm, setSearchTerm] = useState('')
   const [loading, setLoading] = useState(true)
+
+  const currentFormat = STICKER_FORMATS[labelFormat] || STICKER_FORMATS[DEFAULT_STICKER_FORMAT_ID]
 
   useEffect(() => {
     const loadProducts = async () => {
@@ -47,17 +54,52 @@ export default function BarcodesPage() {
   })
 
   const handlePrint = async () => {
-    if (window.electronAPI && typeof window.electronAPI.printCurrentWindow === 'function') {
-      await window.electronAPI.printCurrentWindow({
-        silent: false,
-        printBackground: true,
-        color: true,
-      })
-    } else {
-      window.print()
+    if (!selectedProduct) return
+
+    // Inject exact physical @page sizing for thermal roll / label printer
+    const styleId = 'dynamic-barcode-print-page'
+    let styleEl = document.getElementById(styleId)
+    if (!styleEl) {
+      styleEl = document.createElement('style')
+      styleEl.id = styleId
+      document.head.appendChild(styleEl)
+    }
+
+    styleEl.innerHTML = `
+      @media print {
+        @page {
+          size: ${currentFormat.totalWidthIn}in ${currentFormat.labelHeightIn}in !important;
+          margin: 0 !important;
+        }
+      }
+    `
+
+    try {
+      if (window.electronAPI && typeof window.electronAPI.printCurrentWindow === 'function') {
+        await window.electronAPI.printCurrentWindow({
+          silent: false,
+          printBackground: true,
+          color: true,
+          pageSize: {
+            width: Math.round(currentFormat.totalWidthIn * 25400),
+            height: Math.round(currentFormat.labelHeightIn * 25400),
+          },
+        })
+      } else {
+        window.print()
+      }
+    } finally {
+      setTimeout(() => {
+        const el = document.getElementById(styleId)
+        if (el) el.remove()
+      }, 1500)
     }
   }
 
+  const handleDownloadPdf = () => {
+    if (!selectedProduct) return
+    generateBarcodeStickersPdf(selectedProduct, labelCopies, currentFormat)
+  }
 
   return (
     <div className="erp-page-container">
@@ -65,10 +107,25 @@ export default function BarcodesPage() {
       <div className="erp-page-header no-print">
         <div>
           <h1 className="page-main-title">Barcode Studio &amp; Thermal Printing</h1>
-          <p className="page-sub-title">Generate, preview, and print 1 unique GS1 / EAN-13 barcode sticker per footwear product.</p>
+          <p className="page-sub-title">Generate, preview, and print 2.00″ × 1.00″ die-cut barcode stickers for footwear products.</p>
         </div>
-        <div className="page-header-actions">
-          <button type="button" className="btn btn-primary btn-sm" onClick={handlePrint} disabled={!selectedProduct}>
+        <div className="page-header-actions" style={{ display: 'flex', gap: '8px' }}>
+          <button
+            type="button"
+            className="btn btn-outline btn-sm"
+            onClick={handleDownloadPdf}
+            disabled={!selectedProduct}
+            title="Export labels to 2 × 1 inch PDF"
+          >
+            <DownloadIcon size={14} />
+            <span>Download PDF</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={handlePrint}
+            disabled={!selectedProduct}
+          >
             <PrintIcon size={14} />
             <span>Print {labelCopies} Stickers Now</span>
           </button>
@@ -101,7 +158,9 @@ export default function BarcodesPage() {
               >
                 <div className="b-prod-info">
                   <div className="b-prod-name">{p.product_name}</div>
-                  <div className="b-prod-code">{p.product_code} • {p.category_name}</div>
+                  <div className="b-prod-code">
+                    {p.product_code} • {p.category_name} • MRP: ₹{Number(p.purchase_price ?? p.cost_price ?? 0).toFixed(2)}
+                  </div>
                 </div>
                 <div className="b-prod-price">₹{p.selling_price}</div>
               </div>
@@ -114,7 +173,7 @@ export default function BarcodesPage() {
           <div className="card-header-bar">
             <div className="card-title-group">
               <h3 className="card-heading">Thermal Label Settings &amp; Sheet Preview</h3>
-              <span className="card-caption">Standard 50mm × 25mm barcode label layout</span>
+              <span className="card-caption">{currentFormat.description}</span>
             </div>
           </div>
 
@@ -127,7 +186,7 @@ export default function BarcodesPage() {
                     <input
                       type="number"
                       min="1"
-                      max="60"
+                      max="100"
                       className="erp-input"
                       style={{ width: '80px' }}
                       value={labelCopies}
@@ -142,20 +201,58 @@ export default function BarcodesPage() {
                       value={labelFormat}
                       onChange={(e) => setLabelFormat(e.target.value)}
                     >
-                      <option value="box">Shoe Box Label (Standard 50x25mm)</option>
+                      <option value="diecut_2x1">Die-Cut Label (2 × 1 inch)</option>
+                      <option value="box">Shoe Box Label (Standard 50×25mm)</option>
                       <option value="shelf">Shelf / Rack Tag (Compact)</option>
                     </select>
                   </div>
                 </div>
 
+                {/* Format Specifications Badge */}
+                <div className="sticker-specs-strip">
+                  <span><strong>Label Size:</strong> {currentFormat.labelWidthIn.toFixed(2)}″ × {currentFormat.labelHeightIn.toFixed(2)}″ ({currentFormat.labelWidthMm} × {currentFormat.labelHeightMm} mm)</span>
+                  <span><strong>Type:</strong> {currentFormat.stickerType}</span>
+                  <span><strong>Liner:</strong> {currentFormat.leftLinerIn}″ L / {currentFormat.rightLinerIn}″ R</span>
+                  <span><strong>Sticker MRP (Cost):</strong> ₹{Number(selectedProduct.purchase_price ?? selectedProduct.cost_price ?? 0).toFixed(2)}</span>
+                  <span><strong>Selling Price:</strong> ₹{Number(selectedProduct.selling_price || 0).toFixed(2)}</span>
+                </div>
+
                 <div className="single-preview-wrap">
-                  <span className="preview-label-tag">Single Sticker Preview</span>
-                  <div className="thermal-sticker-label single-preview">
-                    <div className="sticker-shop">{SHOP_INFO.name}</div>
-                    <div className="sticker-prod-name">{selectedProduct.product_name}</div>
-                    <div className="sticker-code">{selectedProduct.product_code}</div>
-                    <BarcodeDisplay value={selectedProduct.barcode} width={1.8} height={42} fontSize={11} />
-                    <div className="sticker-price">MRP: ₹{Number(selectedProduct.selling_price).toFixed(2)} (Incl. all taxes)</div>
+                  <div className="single-preview-header">
+                    <span className="preview-label-tag">Single Sticker Preview</span>
+                    <span className="preview-dimension-tag">{currentFormat.labelWidthIn.toFixed(2)}″ × {currentFormat.labelHeightIn.toFixed(2)}″</span>
+                  </div>
+
+                  {/* Single Sticker with backing liner representation */}
+                  <div
+                    className="sticker-liner-carrier single-preview-carrier"
+                    style={{
+                      width: `${currentFormat.totalWidthIn}in`,
+                      paddingLeft: `${currentFormat.leftLinerIn}in`,
+                      paddingRight: `${currentFormat.rightLinerIn}in`,
+                    }}
+                  >
+                    <div
+                      className="thermal-sticker-label single-preview"
+                      style={{
+                        width: `${currentFormat.labelWidthIn}in`,
+                        height: `${currentFormat.labelHeightIn}in`,
+                      }}
+                    >
+                      <div className="sticker-prod-name" title={selectedProduct.product_name}>
+                        {selectedProduct.product_name}
+                      </div>
+                      <div className="sticker-code">{selectedProduct.product_code}</div>
+                      <BarcodeDisplay
+                        value={selectedProduct.barcode}
+                        width={currentFormat.barcodeWidth}
+                        height={currentFormat.barcodeHeight}
+                        fontSize={currentFormat.barcodeFontSize}
+                        margin={currentFormat.barcodeMargin}
+                        textMargin={currentFormat.barcodeTextMargin}
+                      />
+                      <div className="sticker-price">MRP: ₹{Number(selectedProduct.purchase_price ?? selectedProduct.cost_price ?? 0).toFixed(2)}</div>
+                    </div>
                   </div>
                 </div>
               </>
@@ -166,16 +263,88 @@ export default function BarcodesPage() {
         </div>
       </div>
 
-      {/* PRINTABLE AREA (Only visible during print) */}
+      {/* ALL STICKER PREVIEWS IN GRID (Screen Preview) */}
       {selectedProduct && (
-        <div className="printable-stickers-grid printable-area">
+        <div className="erp-card no-print" style={{ marginTop: '20px' }}>
+          <div className="card-header-bar">
+            <div className="card-title-group">
+              <h3 className="card-heading">All Sticker Previews ({labelCopies} Labels)</h3>
+              <span className="card-caption">
+                {currentFormat.labelWidthIn.toFixed(2)}″ × {currentFormat.labelHeightIn.toFixed(2)}″ Die-Cut Sticker Grid with {currentFormat.leftLinerIn}″ Liner
+              </span>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="printable-stickers-grid">
+              {Array.from({ length: labelCopies }).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="sticker-liner-carrier"
+                  style={{
+                    width: `${currentFormat.totalWidthIn}in`,
+                    paddingLeft: `${currentFormat.leftLinerIn}in`,
+                    paddingRight: `${currentFormat.rightLinerIn}in`,
+                  }}
+                >
+                  <div
+                    className="thermal-sticker-label"
+                    style={{
+                      width: `${currentFormat.labelWidthIn}in`,
+                      height: `${currentFormat.labelHeightIn}in`,
+                    }}
+                  >
+                    <div className="sticker-prod-name" title={selectedProduct.product_name}>
+                      {selectedProduct.product_name}
+                    </div>
+                    <div className="sticker-code">{selectedProduct.product_code}</div>
+                    <BarcodeDisplay
+                      value={selectedProduct.barcode}
+                      width={currentFormat.barcodeWidth}
+                      height={currentFormat.barcodeHeight}
+                      fontSize={currentFormat.barcodeFontSize}
+                      margin={currentFormat.barcodeMargin}
+                      textMargin={currentFormat.barcodeTextMargin}
+                    />
+                    <div className="sticker-price">MRP: ₹{Number(selectedProduct.purchase_price ?? selectedProduct.cost_price ?? 0).toFixed(2)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PRINTABLE AREA FOR BROWSER / THERMAL PRINTER */}
+      {selectedProduct && (
+        <div className="printable-barcode-sheet print-only">
           {Array.from({ length: labelCopies }).map((_, idx) => (
-            <div key={idx} className="thermal-sticker-label">
-              <div className="sticker-shop">{SHOP_INFO.name}</div>
-              <div className="sticker-prod-name">{selectedProduct.product_name}</div>
-              <div className="sticker-code">{selectedProduct.product_code}</div>
-              <BarcodeDisplay value={selectedProduct.barcode} width={1.6} height={38} fontSize={10} />
-              <div className="sticker-price">MRP: ₹{Number(selectedProduct.selling_price).toFixed(2)}</div>
+            <div
+              key={idx}
+              className="print-sticker-carrier"
+              style={{
+                width: `${currentFormat.totalWidthIn}in`,
+                height: `${currentFormat.labelHeightIn}in`,
+              }}
+            >
+              <div
+                className="thermal-sticker-label"
+                style={{
+                  width: `${currentFormat.labelWidthIn}in`,
+                  height: `${currentFormat.labelHeightIn}in`,
+                }}
+              >
+                <div className="sticker-prod-name">{selectedProduct.product_name}</div>
+                <div className="sticker-code">{selectedProduct.product_code}</div>
+                <BarcodeDisplay
+                  value={selectedProduct.barcode}
+                  width={currentFormat.barcodeWidth}
+                  height={currentFormat.barcodeHeight}
+                  fontSize={currentFormat.barcodeFontSize}
+                  margin={currentFormat.barcodeMargin}
+                  textMargin={currentFormat.barcodeTextMargin}
+                />
+                <div className="sticker-price">MRP: ₹{Number(selectedProduct.purchase_price ?? selectedProduct.cost_price ?? 0).toFixed(2)}</div>
+              </div>
             </div>
           ))}
         </div>

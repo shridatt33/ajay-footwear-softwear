@@ -3,11 +3,13 @@ import JsBarcode from 'jsbarcode'
 
 export default function BarcodeDisplay({
   value,
-  width = 1.8,
-  height = 55,
-  fontSize = 13,
+  width = 1.35,
+  height = 28,
+  fontSize = 9,
   displayValue = true,
   className = '',
+  margin = 1,
+  textMargin = 1,
 }) {
   const svgRef = useRef(null)
 
@@ -37,8 +39,8 @@ export default function BarcodeDisplay({
         displayValue,
         font: 'monospace',
         fontSize,
-        textMargin: 4,
-        margin: 6,
+        textMargin,
+        margin,
         background: '#ffffff',
         lineColor: '#000000',
       })
@@ -51,8 +53,8 @@ export default function BarcodeDisplay({
           displayValue,
           font: 'monospace',
           fontSize,
-          textMargin: 4,
-          margin: 6,
+          textMargin,
+          margin,
           background: '#ffffff',
           lineColor: '#000000',
         })
@@ -60,7 +62,7 @@ export default function BarcodeDisplay({
         console.error('Barcode render error:', err)
       }
     }
-  }, [value, width, height, fontSize, displayValue])
+  }, [value, width, height, fontSize, displayValue, margin, textMargin])
 
   if (!value) return null
 

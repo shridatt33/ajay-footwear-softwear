@@ -1,0 +1,66 @@
+/**
+ * Sticker Format Configurations
+ * Centralized specifications for thermal barcode labels and die-cut stickers.
+ */
+
+export const STICKER_FORMATS = {
+  diecut_2x1: {
+    id: 'diecut_2x1',
+    name: 'Die-Cut Label (2 × 1 inch)',
+    labelWidthIn: 2.00,
+    labelHeightIn: 1.00,
+    labelWidthMm: 50.8,
+    labelHeightMm: 25.4,
+    stickerType: 'Die-Cut Labels',
+    leftLinerIn: 0.05,
+    rightLinerIn: 0.05,
+    totalWidthIn: 2.10,
+    totalWidthMm: 53.34,
+    barcodeWidth: 1.35,
+    barcodeHeight: 28,
+    barcodeFontSize: 9,
+    barcodeMargin: 1,
+    barcodeTextMargin: 1,
+    description: '2.00″ × 1.00″ (50.8 × 25.4 mm) • Die-Cut • 0.05″ Exposed Liner Margins',
+  },
+  box: {
+    id: 'box',
+    name: 'Shoe Box Label (Standard 50×25mm)',
+    labelWidthIn: 1.9685,
+    labelHeightIn: 0.98425,
+    labelWidthMm: 50.0,
+    labelHeightMm: 25.0,
+    stickerType: 'Direct Thermal',
+    leftLinerIn: 0.0,
+    rightLinerIn: 0.0,
+    totalWidthIn: 1.9685,
+    totalWidthMm: 50.0,
+    barcodeWidth: 1.35,
+    barcodeHeight: 28,
+    barcodeFontSize: 9,
+    barcodeMargin: 1,
+    barcodeTextMargin: 1,
+    description: '50.0 × 25.0 mm • Standard Shoe Box Label',
+  },
+  shelf: {
+    id: 'shelf',
+    name: 'Shelf / Rack Tag (Compact)',
+    labelWidthIn: 2.00,
+    labelHeightIn: 1.00,
+    labelWidthMm: 50.8,
+    labelHeightMm: 25.4,
+    stickerType: 'Tag',
+    leftLinerIn: 0.0,
+    rightLinerIn: 0.0,
+    totalWidthIn: 2.00,
+    totalWidthMm: 50.8,
+    barcodeWidth: 1.3,
+    barcodeHeight: 26,
+    barcodeFontSize: 9,
+    barcodeMargin: 1,
+    barcodeTextMargin: 1,
+    description: '2.00″ × 1.00″ (50.8 × 25.4 mm) • Shelf / Rack Tag',
+  },
+}
+
+export const DEFAULT_STICKER_FORMAT_ID = 'diecut_2x1'

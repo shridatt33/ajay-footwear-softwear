@@ -3709,66 +3709,181 @@ textarea.form-control {
   letter-spacing: 0.05em;
 }
 
+/* =========================================================
+   BARCODE STUDIO & THERMAL DIE-CUT STICKER SYSTEM (2 × 1 INCH)
+   ========================================================= */
+
+.print-only {
+  display: none !important;
+}
+
+.sticker-specs-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--bg-hover, #f1f5f9);
+  border: 1px solid var(--border-subtle, #e2e8f0);
+  border-radius: var(--radius-sm, 6px);
+  margin-top: 10px;
+  font-size: 0.76rem;
+  color: var(--text-muted, #475569);
+}
+
+.sticker-specs-strip strong {
+  color: var(--text-main, #0f172a);
+}
+
+.single-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 2.30in;
+  margin: 0 auto 6px;
+}
+
+.preview-dimension-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--primary, #2563eb);
+  background: rgba(37, 99, 235, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Die-Cut Label Liner Carrier (Simulates real release backing liner with exposed margin) */
+.sticker-liner-carrier {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.10in; /* 2.00in label + 0.05in left + 0.05in right exposed liner */
+  min-width: 2.10in;
+  max-width: 2.10in;
+  padding: 0 0.05in;
+  background: #fbf9f2;
+  border-left: 1px dashed #d5cdb8;
+  border-right: 1px dashed #d5cdb8;
+  box-sizing: border-box;
+  margin: 0 auto;
+  border-radius: 2px;
+  transition: all 0.2s ease;
+}
+
+.sticker-liner-carrier.single-preview-carrier {
+  margin: 8px auto;
+  padding: 6px 0.05in;
+  background: #f6f1e3;
+  border: 1px dashed #c9bf9f;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
 .thermal-sticker-label,
 .barcode-sticker {
-  width: 50mm;
-  min-height: 25mm;
-  border: 1px solid #000000;
-  padding: 6px 8px;
+  width: 2.00in;
+  height: 1.00in;
+  min-width: 2.00in;
+  max-width: 2.00in;
+  min-height: 1.00in;
+  max-height: 1.00in;
+  border: 1px solid #1e293b;
+  border-radius: 3.5px; /* Die-cut label rounded corners */
+  padding: 2px 4px;
   text-align: center;
   background: #ffffff;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  box-shadow: var(--shadow-sm);
+  justify-content: space-between;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   margin: 0 auto;
   box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+  color: #000000;
 }
 
 .thermal-sticker-label.single-preview {
-  transform: scale(1.15);
-  margin: 10px auto;
+  margin: 0 auto;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12);
 }
 
+/* Shop name is completely removed from sticker design */
 .sticker-shop,
 .sticker-shop-name {
-  font-size: 8pt;
-  font-weight: 800;
-  text-transform: uppercase;
-  line-height: 1.1;
-  margin-bottom: 2px;
+  display: none !important;
 }
 
 .sticker-prod-name,
 .sticker-product-name {
   font-size: 8pt;
   font-weight: 700;
+  line-height: 1.15;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 44mm;
-  margin-bottom: 2px;
+  max-width: 1.90in;
+  width: 100%;
+  color: #000000;
+  text-align: center;
+  margin: 0;
+  padding-top: 1px;
 }
 
 .sticker-code {
-  font-size: 7.5pt;
-  font-family: monospace;
+  font-size: 7pt;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
   font-weight: 700;
-  color: #334155;
-  margin-bottom: 2px;
+  color: #0f172a;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 1.90in;
+  width: 100%;
+  text-align: center;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.barcode-svg-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 1.88in;
+  margin: 0 auto;
+  overflow: hidden;
+  line-height: 1;
+}
+
+.barcode-svg-container svg {
+  max-width: 100%;
+  height: 28px !important;
+  display: block;
+  margin: 0 auto;
 }
 
 .sticker-price {
   font-size: 7.5pt;
-  font-weight: 700;
-  margin-top: 2px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: #000000;
+  white-space: nowrap;
+  text-align: center;
+  margin: 0;
+  padding-bottom: 1px;
+  letter-spacing: -0.01em;
 }
 
 .printable-stickers-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(2.10in, 1fr));
+  gap: 12px;
+  justify-items: center;
+  padding: 12px 0;
 }
 
 /* System Settings & Diagnostics */
@@ -4016,28 +4131,67 @@ textarea.form-control {
     border: none !important;
   }
 
+  /* Barcode stickers print formatting (Physical 2.00 x 1.00 inch) */
+  .printable-stickers-container.print-only,
+  .printable-barcode-sheet.print-only {
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    width: 2.10in !important;
+  }
+
+  .print-sticker-carrier {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 2.10in !important;
+    height: 1.00in !important;
+    min-height: 1.00in !important;
+    max-height: 1.00in !important;
+    padding: 0 0.05in !important;
+    box-sizing: border-box !important;
+    background: transparent !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    margin: 0 auto !important;
+  }
+
   .thermal-sticker-label,
   .barcode-sticker {
-    width: 50mm !important;
-    min-height: 25mm !important;
-    max-width: 50mm !important;
+    width: 2.00in !important;
+    height: 1.00in !important;
+    min-width: 2.00in !important;
+    max-width: 2.00in !important;
+    min-height: 1.00in !important;
+    max-height: 1.00in !important;
     border: 1px solid #000000 !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
     page-break-inside: avoid !important;
     break-inside: avoid !important;
     display: flex !important;
     flex-direction: column !important;
     align-items: center !important;
-    justify-content: center !important;
-    padding: 2mm 3mm !important;
+    justify-content: space-between !important;
+    padding: 1.5mm 2.5mm !important;
     box-sizing: border-box !important;
     background: #ffffff !important;
     color: #000000 !important;
+    margin: 0 auto !important;
+  }
+
+  .print-sticker-carrier:last-child,
+  .thermal-sticker-label:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
   }
 
   .printable-stickers-grid {
     display: grid !important;
-    grid-template-columns: repeat(auto-fill, 50mm) !important;
+    grid-template-columns: repeat(auto-fill, 2.10in) !important;
     gap: 4mm !important;
     justify-content: center !important;
     padding: 4mm 0 !important;
