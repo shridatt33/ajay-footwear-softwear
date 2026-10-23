@@ -700,6 +700,64 @@
   font-weight: 700;
 }
 
+.summary-calc-row.summary-interactive-row {
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.summary-input-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.summary-input-badge-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 2px 6px;
+  transition: all 0.2s ease;
+}
+
+.summary-input-badge-wrap:focus-within {
+  border-color: #2563eb;
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.summary-field-input {
+  width: 58px;
+  border: none;
+  background: transparent;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #1e293b;
+  text-align: right;
+  padding: 2px 4px;
+  outline: none;
+}
+
+.summary-field-input::-webkit-inner-spin-button,
+.summary-field-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.summary-field-prefix,
+.summary-field-suffix {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #64748b;
+  user-select: none;
+}
+
+.text-success {
+  color: #16a34a !important;
+}
+
 .summary-calc-row.round-off-row {
   background: #f8fafc;
   padding: 5px 8px;
@@ -1049,6 +1107,114 @@
 .tbl-subrow-remove:hover {
   color: #dc2626;
   background: #fee2e2;
+}
+
+/* Direct Inline Multi-Size & Stock Management Table Styles */
+.tbl-group-stock-badge {
+  display: inline-block;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  padding: 2px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.tbl-inline-add-size-select {
+  height: 27px;
+  background: #f0fdf4;
+  border: 1.5px dashed #86efac;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #15803d;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+  width: 100%;
+  max-width: 150px;
+  box-sizing: border-box;
+}
+
+.tbl-inline-add-size-select:hover {
+  background: #dcfce7;
+  border-color: #22c55e;
+}
+
+.tbl-inline-size-select {
+  height: 29px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #0f172a;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  width: 100%;
+  max-width: 155px;
+  box-sizing: border-box;
+}
+
+.tbl-inline-size-select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.tbl-inline-size-select.select-unassigned {
+  border: 2px solid #f59e0b;
+  background: #fffbeb;
+  color: #b45309;
+  font-weight: 800;
+  animation: pulseAttention 1.5s infinite;
+}
+
+@keyframes pulseAttention {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25); }
+}
+
+.stock-indicator-badge.low-stock {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.stock-indicator-badge.select-hint {
+  background: #f1f5f9;
+  color: #94a3b8;
+  border: 1px dashed #cbd5e1;
+  font-style: italic;
+}
+
+.tbl-qty-control-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.tbl-qty-input-inline {
+  width: 44px;
+  height: 27px;
+  text-align: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #0f172a;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.tbl-qty-input-inline:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
 }
 
 /* Multi-Size Wholesale Selector Modal */

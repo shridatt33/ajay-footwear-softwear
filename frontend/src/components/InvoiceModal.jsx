@@ -3,6 +3,7 @@ import { API_BASE_URL, SHOP_INFO } from '../config'
 import BarcodeDisplay from './BarcodeDisplay'
 import { PrintIcon, CloseIcon, DownloadIcon } from './Icons'
 import { generateInvoicePDFData, generateInvoicePDF } from '../utils/pdfGenerator'
+import { groupInvoiceItems, extractInvoiceTotals, formatCurrency } from '../utils/invoiceUtils'
 
 export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePrint }) {
   if (!bill) return null
@@ -112,7 +113,7 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
         throw new Error('Invoice number is missing.')
       }
 
-      // 3. Generate the invoice PDF using invoice number in filename (e.g. SW-1029.pdf)
+      // 3. Generate the invoice PDF using invoice number in filename
       try {
         const pdfData = generateInvoicePDFData(activeBill)
         if (pdfData) {
@@ -179,20 +180,9 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
     }
   }
 
-
-  const items = currentBill.items || []
-  const subtotal = items.reduce((sum, item) => {
-    const unitPrice = Number(item.selling_price ?? item.price ?? 0)
-    const qty = Number(item.quantity ?? 1)
-    const total = Number(item.total_price ?? (unitPrice * qty) ?? 0)
-    return sum + total
-  }, 0)
-
-  const discount = Number(currentBill.discount || 0)
-  const tax = Number(currentBill.tax || 0)
-  const grandTotal = Number(currentBill.total_amount ?? Math.max(0, subtotal - discount + tax))
-  const received = Number(currentBill.amount_received || 0)
-  const change = Number(currentBill.change_returned || 0)
+  // Extract grouped items and calculated totals
+  const groupedItems = groupInvoiceItems(currentBill.items || [])
+  const totals = extractInvoiceTotals(currentBill)
 
   const formattedDateTime = currentBill.created_at
     ? new Date(currentBill.created_at).toLocaleString('en-IN', {
@@ -217,12 +207,14 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
   return (
     <div className="erp-modal-backdrop invoice-modal-backdrop" onClick={onClose}>
       <div className="erp-modal-box invoice-modal-box" onClick={(e) => e.stopPropagation()}>
-        {/* Clean top header: Only badge, bill number, and subtle corner close icon */}
+        {/* Top Header Controls (No-Print) */}
         <div className="invoice-modal-header no-print">
           <div className="invoice-modal-title-group">
             <span className="modal-badge-label">TAX INVOICE</span>
             <span className="modal-bill-no">{currentBill.bill_no || 'DRAFT'}</span>
-            <span className="invoice-header-status-pill">{currentBill.status || 'Paid'}</span>
+            <span className={`invoice-header-status-pill ${totals.isAccount ? 'unpaid' : 'paid'}`}>
+              {currentBill.status || (totals.isAccount ? 'Unpaid' : 'Paid')}
+            </span>
           </div>
 
           <button
@@ -236,231 +228,430 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
           </button>
         </div>
 
-        {/* Scrollable invoice modal body containing full A4 printable sheet */}
+        {/* Scrollable invoice modal body containing active format view */}
         <div className="invoice-modal-body">
-          <div className="invoice-printable-sheet printable-area">
-            {/* Shop Branding Header */}
-            <div className="inv-header">
-              <div className="inv-shop-title">{SHOP_INFO.name}</div>
-              <div className="inv-shop-tagline">{SHOP_INFO.tagline}</div>
-              <div className="inv-shop-address">{SHOP_INFO.address}</div>
-              <div className="inv-shop-contact">
-                <span>
-                  <b>Mobile:</b> {SHOP_INFO.phone}
-                </span>
-                <span className="sep">•</span>
-                <span>
-                  <b>GSTIN:</b> {SHOP_INFO.gst}
-                </span>
-              </div>
-            </div>
-
-            <div className="inv-divider-double" />
-
-            {/* Meta Information Grid */}
-            <div className="inv-meta-grid">
-              <div className="inv-meta-col">
-                <div className="inv-meta-row">
-                  <span className="label">Invoice No:</span>
-                  <span className="val highlight">{currentBill.bill_no || 'DRAFT'}</span>
+          {printFormat === 'thermal' ? (
+            /* =============================================================
+               80MM THERMAL RECEIPT PREVIEW & PRINT SHEET
+               ============================================================= */
+            <div className="thermal-receipt-container printable-area">
+              <div className="thermal-receipt-sheet">
+                {/* Header */}
+                <div className="thermal-center">
+                  <div className="thermal-shop-name">{SHOP_INFO.name}</div>
+                  <div className="thermal-tagline">{SHOP_INFO.tagline}</div>
+                  <div className="thermal-sub">{SHOP_INFO.address}</div>
+                  <div className="thermal-sub">Phone: {SHOP_INFO.phone}</div>
+                  <div className="thermal-sub">GSTIN: {SHOP_INFO.gst}</div>
                 </div>
-                <div className="inv-meta-row">
-                  <span className="label">Date &amp; Time:</span>
-                  <span className="val">{formattedDateTime}</span>
-                </div>
-                <div className="inv-meta-row">
-                  <span className="label">Payment Mode:</span>
-                  <span className="val font-bold">{currentBill.payment_mode || 'Cash'}</span>
-                </div>
-              </div>
 
-              <div className="inv-meta-col text-right">
-                <div className="inv-meta-row">
-                  <span className="label">Customer Name:</span>
-                  <span className="val font-bold">{currentBill.customer_name || 'Walk-in Customer'}</span>
+                <div className="thermal-divider-double" />
+                <div className="thermal-center thermal-bold" style={{ fontSize: '13px', letterSpacing: '0.04em' }}>
+                  RETAIL TAX INVOICE
+                </div>
+                <div className="thermal-divider-dashed" />
+
+                {/* Metadata */}
+                <div className="thermal-row">
+                  <span>Bill No:</span>
+                  <span className="thermal-bold">{currentBill.bill_no || 'DRAFT'}</span>
+                </div>
+                <div className="thermal-row">
+                  <span>Date:</span>
+                  <span>{formattedDateTime}</span>
+                </div>
+                <div className="thermal-row">
+                  <span>Customer:</span>
+                  <span className="thermal-bold">{currentBill.customer_name || 'Walk-in Customer'}</span>
                 </div>
                 {currentBill.customer_phone && currentBill.customer_phone !== '—' && (
-                  <div className="inv-meta-row">
-                    <span className="label">Contact Phone:</span>
-                    <span className="val">{currentBill.customer_phone}</span>
+                  <div className="thermal-row">
+                    <span>Phone:</span>
+                    <span>{currentBill.customer_phone}</span>
                   </div>
                 )}
-                {currentBill.billing_address && (
-                  <div className="inv-meta-row">
-                    <span className="label">Billing Address:</span>
-                    <span className="val">{currentBill.billing_address}</span>
-                  </div>
-                )}
-                <div className="inv-meta-row">
-                  <span className="label">Status:</span>
-                  <span className={`status-badge ${currentBill.status === 'Unpaid' ? 'unpaid' : 'paid'}`}>
-                    {currentBill.status || 'Paid'}
-                  </span>
+                <div className="thermal-row">
+                  <span>Pay Mode:</span>
+                  <span className="thermal-bold">{currentBill.payment_mode || 'Cash'}</span>
                 </div>
-              </div>
-            </div>
+                <div className="thermal-row">
+                  <span>Status:</span>
+                  <span className="thermal-bold">{totals.isAccount ? 'UNPAID' : 'PAID'}</span>
+                </div>
 
-            {/* Items Table with Shoe Size & Quantities */}
-            <table className="inv-items-table">
-              <thead>
-                <tr>
-                  <th style={{ width: '40px', textAlign: 'center' }}>#</th>
-                  <th>Product / Item Description</th>
-                  <th style={{ width: '90px', textAlign: 'center' }}>Shoe Size</th>
-                  <th style={{ width: '70px', textAlign: 'center' }}>Qty</th>
-                  <th style={{ width: '110px', textAlign: 'right' }}>Unit Price (₹)</th>
-                  <th style={{ width: '120px', textAlign: 'right' }}>Total Price (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.length === 0 ? (
-                  <tr>
-                    <td colSpan="6" style={{ textAlign: 'center', padding: '16px', color: '#64748b' }}>
-                      No items in this invoice.
-                    </td>
-                  </tr>
-                ) : (
-                  items.map((it, idx) => {
-                    const unitPrice = Number(it.selling_price ?? it.price ?? 0)
-                    const qty = Number(it.quantity ?? 1)
-                    const itemTotal = Number(it.total_price ?? (unitPrice * qty) ?? 0)
+                <div className="thermal-divider-dashed" />
 
-                    return (
-                      <tr key={it.id || idx}>
-                        <td style={{ textAlign: 'center' }}>{idx + 1}</td>
-                        <td>
-                          <div className="inv-item-name">{it.product_name}</div>
-                          {(it.barcode || it.product_code) && (
-                            <div className="inv-item-code">
-                              Code: {it.product_code || it.barcode}
-                            </div>
-                          )}
-                        </td>
-                        <td style={{ textAlign: 'center' }} className="inv-size-cell">
-                          {it.size ? `Size ${it.size}` : '—'}
-                        </td>
-                        <td style={{ textAlign: 'center' }} className="font-bold">
-                          {qty}
-                        </td>
-                        <td style={{ textAlign: 'right' }}>{unitPrice.toFixed(2)}</td>
-                        <td style={{ textAlign: 'right' }} className="font-bold">
-                          {itemTotal.toFixed(2)}
+                {/* Grouped Items Table */}
+                <table className="thermal-items-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '52%' }}>Item Description</th>
+                      <th style={{ width: '14%', textAlign: 'center' }}>Pairs</th>
+                      <th style={{ width: '16%', textAlign: 'right' }}>Rate</th>
+                      <th style={{ width: '18%', textAlign: 'right' }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupedItems.length === 0 ? (
+                      <tr>
+                        <td colSpan="4" style={{ textAlign: 'center', padding: '8px 0' }}>
+                          No items in bill.
                         </td>
                       </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </table>
+                    ) : (
+                      groupedItems.map((grp, idx) => (
+                        <tr key={grp.key || idx}>
+                          <td style={{ verticalAlign: 'top' }}>
+                            <div className="thermal-item-name">{grp.product_name}</div>
+                            <div className="thermal-sizes-breakdown">{grp.size_breakdown_text}</div>
+                          </td>
+                          <td style={{ textAlign: 'center', verticalAlign: 'top', fontWeight: 700 }}>
+                            {grp.total_quantity}
+                          </td>
+                          <td style={{ textAlign: 'right', verticalAlign: 'top' }}>
+                            {grp.selling_price.toFixed(2)}
+                          </td>
+                          <td style={{ textAlign: 'right', verticalAlign: 'top', fontWeight: 700 }}>
+                            {grp.total_price.toFixed(2)}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
 
-            {/* Summary & Totals Calculation Box */}
-            <div className="inv-summary-wrapper">
-              <div className="inv-summary-notes">
-                <div className="inv-terms-title">Terms &amp; Conditions:</div>
-                <ul className="inv-terms-list">
-                  <li>Goods once sold will not be refunded.</li>
-                  <li>Exchange allowed within 7 days with this original receipt.</li>
-                  <li>Footwear must be in unworn, original box condition.</li>
-                  <li>No guarantee on discount / sales items.</li>
-                </ul>
-              </div>
+                <div className="thermal-divider-dashed" />
 
-              <div className="inv-calculation-box">
-                <div className="inv-calc-row">
+                {/* Calculations */}
+                <div className="thermal-row">
                   <span>Subtotal:</span>
-                  <span>₹{subtotal.toFixed(2)}</span>
+                  <span>{formatCurrency(totals.subtotal)}</span>
                 </div>
-                {discount > 0 && (
-                  <div className="inv-calc-row text-success">
-                    <span>Discount:</span>
-                    <span>- ₹{discount.toFixed(2)}</span>
+                {totals.discountAmount > 0 && (
+                  <div className="thermal-row" style={{ color: '#15803d' }}>
+                    <span>Discount {totals.discountPercent > 0 ? `(${totals.discountPercent}%)` : ''}:</span>
+                    <span>- {formatCurrency(totals.discountAmount)}</span>
                   </div>
                 )}
-                {tax > 0 && (
-                  <div className="inv-calc-row">
+                {totals.deliveryCharges > 0 && (
+                  <div className="thermal-row">
+                    <span>Delivery / Transport:</span>
+                    <span>+ {formatCurrency(totals.deliveryCharges)}</span>
+                  </div>
+                )}
+                {totals.tax > 0 && (
+                  <div className="thermal-row">
                     <span>Tax / GST:</span>
-                    <span>+ ₹{tax.toFixed(2)}</span>
+                    <span>+ {formatCurrency(totals.tax)}</span>
                   </div>
                 )}
-                <div className="inv-divider-single" />
-                <div className="inv-calc-row grand-total-row">
-                  <span>Grand Total:</span>
-                  <span>₹{grandTotal.toFixed(2)}</span>
+                {totals.roundOff !== 0 && (
+                  <div className="thermal-row">
+                    <span>Round Off:</span>
+                    <span>{totals.roundOff > 0 ? '+' : ''}{formatCurrency(totals.roundOff)}</span>
+                  </div>
+                )}
+
+                <div className="thermal-divider-dashed" />
+
+                <div className="thermal-row thermal-grand-total">
+                  <span>GRAND TOTAL:</span>
+                  <span>{formatCurrency(totals.grandTotal)}</span>
                 </div>
-                {currentBill.payment_mode === 'Add in Account' || currentBill.status === 'Unpaid' ? (
+
+                {totals.isAccount ? (
                   <>
-                    <div className="inv-calc-row small-calc">
+                    <div className="thermal-row" style={{ marginTop: '3px' }}>
                       <span>Amount Paid:</span>
-                      <span>₹{Number(currentBill.amount_paid ?? received ?? 0).toFixed(2)}</span>
+                      <span>{formatCurrency(totals.amountReceived)}</span>
                     </div>
-                    <div className="inv-calc-row small-calc" style={{ color: '#dc2626', fontWeight: 700 }}>
-                      <span>Outstanding Due:</span>
-                      <span>₹{Number(currentBill.outstanding_amount ?? Math.max(0, grandTotal - (currentBill.amount_paid ?? received ?? 0))).toFixed(2)}</span>
+                    <div className="thermal-row thermal-bold" style={{ color: '#b91c1c' }}>
+                      <span>Balance Due:</span>
+                      <span>{formatCurrency(totals.outstandingAmount)}</span>
                     </div>
                   </>
                 ) : (
-                  received > 0 && (
+                  totals.amountReceived > 0 && (
                     <>
-                      <div className="inv-calc-row small-calc">
+                      <div className="thermal-row" style={{ marginTop: '3px' }}>
                         <span>Received:</span>
-                        <span>₹{received.toFixed(2)}</span>
+                        <span>{formatCurrency(totals.amountReceived)}</span>
                       </div>
-                      {change > 0 && (
-                        <div className="inv-calc-row small-calc">
-                          <span>Change:</span>
-                          <span>₹{change.toFixed(2)}</span>
+                      {totals.changeReturned > 0 && (
+                        <div className="thermal-row">
+                          <span>Change Return:</span>
+                          <span>{formatCurrency(totals.changeReturned)}</span>
                         </div>
                       )}
                     </>
                   )
                 )}
-              </div>
-            </div>
 
-            {/* Bottom Barcode & Store Sign-Off */}
-            <div className="inv-footer-barcode">
-              {currentBill.bill_no && (
-                <BarcodeDisplay value={currentBill.bill_no} width={1.8} height={38} fontSize={11} />
-              )}
-              <div className="inv-thankyou-msg">
-                Thank You for Shopping at SWAMIDATT FOOTWEAR! Visit Again.
+                <div className="thermal-divider-dashed" />
+
+                {/* Invoice Barcode */}
+                {currentBill.bill_no && (
+                  <div className="thermal-barcode-wrap">
+                    <BarcodeDisplay value={currentBill.bill_no} width={1.4} height={32} fontSize={10} />
+                  </div>
+                )}
+
+                <div className="thermal-footer">
+                  <div className="thermal-bold">Thank You for Shopping at SWAMIDATT FOOTWEAR!</div>
+                  <div style={{ fontSize: '9px', marginTop: '2px' }}>Visit Again.</div>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            /* =============================================================
+               A4 RETAIL TAX INVOICE PREVIEW & PRINT SHEET
+               ============================================================= */
+            <div className="invoice-printable-sheet printable-area">
+              {/* Shop Branding Header */}
+              <div className="inv-header">
+                <div className="inv-shop-title">{SHOP_INFO.name}</div>
+                <div className="inv-shop-tagline">{SHOP_INFO.tagline}</div>
+                <div className="inv-shop-address">{SHOP_INFO.address}</div>
+                <div className="inv-shop-contact">
+                  <span>
+                    <b>Mobile:</b> {SHOP_INFO.phone}
+                  </span>
+                  <span className="sep">•</span>
+                  <span>
+                    <b>GSTIN:</b> {SHOP_INFO.gst}
+                  </span>
+                </div>
+              </div>
+
+              <div className="inv-divider-double" />
+              <div className="inv-heading-title">Retail Tax Invoice</div>
+
+              {/* Meta Information Grid */}
+              <div className="inv-meta-grid">
+                <div className="inv-meta-col">
+                  <div className="inv-meta-row">
+                    <span className="label">Invoice No:</span>
+                    <span className="val highlight">{currentBill.bill_no || 'DRAFT'}</span>
+                  </div>
+                  <div className="inv-meta-row">
+                    <span className="label">Date &amp; Time:</span>
+                    <span className="val">{formattedDateTime}</span>
+                  </div>
+                  <div className="inv-meta-row">
+                    <span className="label">Payment Mode:</span>
+                    <span className="val font-bold">{currentBill.payment_mode || 'Cash'}</span>
+                  </div>
+                </div>
+
+                <div className="inv-meta-col text-right">
+                  <div className="inv-meta-row">
+                    <span className="label">Customer Name:</span>
+                    <span className="val font-bold">{currentBill.customer_name || 'Walk-in Customer'}</span>
+                  </div>
+                  {currentBill.customer_phone && currentBill.customer_phone !== '—' && (
+                    <div className="inv-meta-row">
+                      <span className="label">Contact Phone:</span>
+                      <span className="val">{currentBill.customer_phone}</span>
+                    </div>
+                  )}
+                  {currentBill.billing_address && (
+                    <div className="inv-meta-row">
+                      <span className="label">Billing Address:</span>
+                      <span className="val">{currentBill.billing_address}</span>
+                    </div>
+                  )}
+                  <div className="inv-meta-row">
+                    <span className="label">Status:</span>
+                    <span className={`status-badge ${totals.isAccount ? 'unpaid' : 'paid'}`}>
+                      {totals.isAccount ? 'UNPAID' : 'PAID'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Grouped Footwear Items Table (Identical models grouped into 1 row, NO SKU column) */}
+              <table className="inv-items-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: '38px', textAlign: 'center' }}>#</th>
+                    <th style={{ minWidth: '180px' }}>Item Description</th>
+                    <th style={{ width: '230px' }}>Size-wise Quantity</th>
+                    <th style={{ width: '75px', textAlign: 'center' }}>Total Pairs</th>
+                    <th style={{ width: '95px', textAlign: 'right' }}>Unit Price</th>
+                    <th style={{ width: '105px', textAlign: 'right' }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedItems.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" style={{ textAlign: 'center', padding: '16px', color: '#64748b' }}>
+                        No items in this invoice.
+                      </td>
+                    </tr>
+                  ) : (
+                    groupedItems.map((grp, idx) => (
+                      <tr key={grp.key || idx}>
+                        <td style={{ textAlign: 'center' }}>{idx + 1}</td>
+                        <td>
+                          <div className="inv-item-name">{grp.product_name}</div>
+                        </td>
+                        <td className="inv-size-cell">
+                          <span className="inv-size-pill">{grp.size_breakdown_text}</span>
+                        </td>
+                        <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                          {grp.total_quantity}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          {formatCurrency(grp.selling_price)}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                          {formatCurrency(grp.total_price)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+
+              {/* Summary & Totals Calculation Box (Notice: NO Terms & Conditions section) */}
+              <div className="inv-summary-wrapper" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                {/* Optional Customer Note / Left Space */}
+                <div className="inv-notes-column" style={{ flex: 1, paddingRight: '24px' }}>
+                  {currentBill.description ? (
+                    <div className="inv-note-box">
+                      <div className="inv-note-title">Invoice Note:</div>
+                      <div className="inv-note-text">{currentBill.description}</div>
+                    </div>
+                  ) : (
+                    <div style={{ minHeight: '20px' }} />
+                  )}
+                </div>
+
+                {/* Right Calculations Card */}
+                <div className="inv-calculation-box">
+                  <div className="inv-calc-row">
+                    <span>Subtotal:</span>
+                    <span>{formatCurrency(totals.subtotal)}</span>
+                  </div>
+
+                  {totals.discountAmount > 0 && (
+                    <div className="inv-calc-row text-success">
+                      <span>Discount {totals.discountPercent > 0 ? `(${totals.discountPercent}%)` : ''}:</span>
+                      <span>- {formatCurrency(totals.discountAmount)}</span>
+                    </div>
+                  )}
+
+                  {totals.deliveryCharges > 0 && (
+                    <div className="inv-calc-row">
+                      <span>Delivery / Transport Charges:</span>
+                      <span>+ {formatCurrency(totals.deliveryCharges)}</span>
+                    </div>
+                  )}
+
+                  {totals.tax > 0 && (
+                    <div className="inv-calc-row">
+                      <span>Tax / GST:</span>
+                      <span>+ {formatCurrency(totals.tax)}</span>
+                    </div>
+                  )}
+
+                  {totals.roundOff !== 0 && (
+                    <div className="inv-calc-row">
+                      <span>Round Off:</span>
+                      <span>{totals.roundOff > 0 ? '+' : ''}{formatCurrency(totals.roundOff)}</span>
+                    </div>
+                  )}
+
+                  <div className="inv-divider-single" />
+
+                  <div className="inv-calc-row grand-total-row">
+                    <span>Grand Total:</span>
+                    <span>{formatCurrency(totals.grandTotal)}</span>
+                  </div>
+
+                  {totals.isAccount ? (
+                    <>
+                      <div className="inv-calc-row small-calc">
+                        <span>Amount Paid:</span>
+                        <span>{formatCurrency(totals.amountReceived)}</span>
+                      </div>
+                      <div className="inv-calc-row small-calc" style={{ color: '#dc2626', fontWeight: 700 }}>
+                        <span>Balance Due:</span>
+                        <span>{formatCurrency(totals.outstandingAmount)}</span>
+                      </div>
+                    </>
+                  ) : (
+                    totals.amountReceived > 0 && (
+                      <>
+                        <div className="inv-calc-row small-calc">
+                          <span>Received:</span>
+                          <span>{formatCurrency(totals.amountReceived)}</span>
+                        </div>
+                        {totals.changeReturned > 0 && (
+                          <div className="inv-calc-row small-calc">
+                            <span>Change Return:</span>
+                            <span>{formatCurrency(totals.changeReturned)}</span>
+                          </div>
+                        )}
+                      </>
+                    )
+                  )}
+                </div>
+              </div>
+
+              {/* Bottom Sign-off, Barcode & Store Signature */}
+              <div className="inv-bottom-signature-row">
+                <div className="inv-footer-barcode-col">
+                  {currentBill.bill_no && (
+                    <BarcodeDisplay value={currentBill.bill_no} width={1.6} height={34} fontSize={10} />
+                  )}
+                  <div className="inv-thankyou-msg">
+                    Thank You for Shopping at SWAMIDATT FOOTWEAR! Visit Again.
+                  </div>
+                </div>
+
+                <div className="inv-authorized-signature">
+                  Authorized Signatory
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Bottom Prominent Action Footer with Format Selection & Action Buttons */}
         <div className="invoice-modal-footer no-print" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', padding: '12px 18px' }}>
           {/* Print format selection */}
           <div className="print-format-switcher" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: 600 }}>Format:</span>
+            <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: 600 }}>Layout:</span>
             <button
               type="button"
               className={`btn btn-sm ${printFormat === 'a4' ? 'btn-primary' : 'btn-outline'}`}
               onClick={() => setPrintFormat('a4')}
               style={{
-                padding: '4px 10px',
-                fontSize: '0.8rem',
+                padding: '5px 12px',
+                fontSize: '0.82rem',
                 backgroundColor: printFormat === 'a4' ? '#2563eb' : 'transparent',
                 borderColor: printFormat === 'a4' ? '#2563eb' : '#cbd5e1',
                 color: printFormat === 'a4' ? '#fff' : '#475569',
+                fontWeight: 600,
               }}
             >
-              A4 Invoice
+              A4 Sheet
             </button>
             <button
               type="button"
               className={`btn btn-sm ${printFormat === 'thermal' ? 'btn-primary' : 'btn-outline'}`}
               onClick={() => setPrintFormat('thermal')}
               style={{
-                padding: '4px 10px',
-                fontSize: '0.8rem',
+                padding: '5px 12px',
+                fontSize: '0.82rem',
                 backgroundColor: printFormat === 'thermal' ? '#2563eb' : 'transparent',
                 borderColor: printFormat === 'thermal' ? '#2563eb' : '#cbd5e1',
                 color: printFormat === 'thermal' ? '#fff' : '#475569',
+                fontWeight: 600,
               }}
             >
-              Thermal (80mm)
+              80mm Thermal
             </button>
           </div>
 
@@ -490,7 +681,7 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
                 {saving
                   ? 'Processing...'
                   : currentBill.id
-                  ? (printFormat === 'thermal' ? 'Print Thermal Receipt' : 'Print Tax Invoice')
+                  ? (printFormat === 'thermal' ? 'Print 80mm Receipt' : 'Print Tax Invoice')
                   : 'SAVE BILL & PRINT'}
               </span>
             </button>
@@ -504,6 +695,5 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
         </div>
       </div>
     </div>
-
   )
 }

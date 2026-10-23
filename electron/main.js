@@ -47,26 +47,166 @@ function escapeXml(unsafe) {
     .replace(/'/g, "&#039;");
 }
 
+function formatCurrency(amount) {
+  const num = Number(amount || 0);
+  return `₹${num.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatCurrencyPlain(amount) {
+  const num = Number(amount || 0);
+  return num.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function groupInvoiceItems(items) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const groups = [];
+  const groupMap = new Map();
+
+  for (const it of items) {
+    const pid = it.product_id != null ? String(it.product_id) : null;
+    const name = (it.product_name || "Footwear Item").trim();
+    const rate = Number(it.selling_price ?? it.price ?? 0);
+    const rateKey = rate.toFixed(2);
+    const groupKey = pid ? `pid_${pid}_${rateKey}` : `name_${name.toLowerCase()}_${rateKey}`;
+
+    let grp = groupMap.get(groupKey);
+    if (!grp) {
+      grp = {
+        key: groupKey,
+        product_id: it.product_id,
+        product_name: name,
+        selling_price: rate,
+        sizes: [],
+        total_quantity: 0,
+        total_price: 0,
+      };
+      groupMap.set(groupKey, grp);
+      groups.push(grp);
+    }
+
+    const qty = Number(it.quantity ?? 1);
+    const lineTotal = Number(it.total_price ?? (rate * qty) ?? 0);
+    const sizeVal = (it.size !== null && it.size !== undefined && it.size !== "") ? String(it.size).trim() : "";
+
+    const existingSize = grp.sizes.find((s) => s.size === sizeVal);
+    if (existingSize) {
+      existingSize.quantity += qty;
+      existingSize.total_price += lineTotal;
+    } else {
+      grp.sizes.push({
+        size: sizeVal,
+        quantity: qty,
+        total_price: lineTotal,
+      });
+    }
+
+    grp.total_quantity += qty;
+    grp.total_price += lineTotal;
+  }
+
+  for (const grp of groups) {
+    grp.sizes.sort((a, b) => {
+      const numA = parseFloat(a.size);
+      const numB = parseFloat(b.size);
+      if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+      return a.size.localeCompare(b.size);
+    });
+
+    const sizeTokens = grp.sizes.map((s) => {
+      if (s.size) {
+        return `Size ${s.size}: ${s.quantity}`;
+      }
+      return `${s.quantity} pair${s.quantity > 1 ? "s" : ""}`;
+    });
+    grp.size_breakdown_text = sizeTokens.join(", ");
+    grp.total_price = Math.round(grp.total_price * 100) / 100;
+  }
+
+  return groups;
+}
+
+function extractInvoiceTotals(bill) {
+  if (!bill) {
+    return {
+      subtotal: 0,
+      discountAmount: 0,
+      discountPercent: 0,
+      deliveryCharges: 0,
+      tax: 0,
+      roundOff: 0,
+      grandTotal: 0,
+      amountReceived: 0,
+      changeReturned: 0,
+      outstandingAmount: 0,
+      isAccount: false,
+    };
+  }
+
+  const items = Array.isArray(bill.items) ? bill.items : [];
+  const itemsSubtotal = items.reduce((sum, it) => {
+    const rate = Number(it.selling_price ?? it.price ?? 0);
+    const qty = Number(it.quantity ?? 1);
+    return sum + Number(it.total_price ?? (rate * qty) ?? 0);
+  }, 0);
+
+  const subtotal = Math.round((Number(bill.subtotal) > 0 ? Number(bill.subtotal) : itemsSubtotal) * 100) / 100;
+
+  const discPercentIn = Number(bill.discount_percent ?? 0);
+  let discAmountIn = Number(bill.discount_amount ?? bill.discount ?? 0);
+  let discountPercent = discPercentIn;
+  let discountAmount = discAmountIn;
+
+  if (discountPercent > 0 && discountAmount <= 0) {
+    discountAmount = Math.round(subtotal * (discountPercent / 100) * 100) / 100;
+  } else if (discountAmount > 0 && discountPercent <= 0 && subtotal > 0) {
+    discountPercent = Math.round(((discountAmount / subtotal) * 100) * 10) / 10;
+  }
+
+  const deliveryCharges = Math.max(0, Number(bill.delivery_charges ?? 0));
+  const tax = Math.max(0, Number(bill.tax ?? 0));
+  const roundOff = Number(bill.round_off ?? 0);
+
+  const totalBeforeRoundOff = Math.round((subtotal - discountAmount + deliveryCharges + tax) * 100) / 100;
+  const grandTotal = Number(bill.total_amount ?? (roundOff !== 0 ? Math.round(totalBeforeRoundOff) : totalBeforeRoundOff));
+
+  const amountReceived = Number(bill.amount_received ?? bill.amount_paid ?? 0);
+  const changeReturned = Number(bill.change_returned ?? 0);
+  const isAccount = bill.payment_mode === "Add in Account" || String(bill.status).toLowerCase() === "unpaid";
+  const outstandingAmount = Number(
+    bill.outstanding_amount ?? (isAccount ? Math.max(0, grandTotal - amountReceived) : 0)
+  );
+
+  return {
+    subtotal,
+    discountAmount,
+    discountPercent,
+    deliveryCharges,
+    tax,
+    roundOff,
+    grandTotal,
+    amountReceived,
+    changeReturned,
+    outstandingAmount,
+    isAccount,
+  };
+}
+
 function generateInvoiceHtml(bill, printType = "a4") {
   if (!bill) return "";
 
-  const items = Array.isArray(bill.items) ? bill.items : [];
-  const subtotal = items.reduce((sum, it) => {
-    const rate = Number(it.selling_price ?? it.price ?? 0);
-    const qty = Number(it.quantity ?? 1);
-    return sum + Number(it.total_price ?? rate * qty ?? 0);
-  }, 0);
+  const groupedItems = groupInvoiceItems(bill.items || []);
+  const totals = extractInvoiceTotals(bill);
 
-  const discount = Number(bill.discount || 0);
-  const tax = Number(bill.tax || 0);
-  const roundOff = Number(bill.round_off || 0);
-  const grandTotal = Number(bill.total_amount ?? Math.max(0, subtotal - discount + tax + roundOff));
-  const received = Number(bill.amount_received ?? bill.amount_paid ?? 0);
-  const change = Number(bill.change_returned ?? 0);
-  const outstanding = Number(bill.outstanding_amount ?? 0);
   const billNo = bill.bill_no || "DRAFT";
   const paymentMode = bill.payment_mode || "Cash";
-  const status = bill.status || (paymentMode === "Add in Account" ? "Unpaid" : "Paid");
+  const status = totals.isAccount ? "UNPAID" : (bill.status || "PAID").toUpperCase();
   const custName = bill.customer_name || "Walk-in Customer";
   const custPhone = bill.customer_phone || "";
   const billingAddr = bill.billing_address || "";
@@ -103,28 +243,30 @@ function generateInvoiceHtml(bill, printType = "a4") {
     body {
       width: 72mm;
       margin: 0 auto;
-      font-family: 'Courier New', Courier, monospace, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Courier New', monospace, sans-serif;
       font-size: 11px;
       color: #000;
       background: #fff;
-      line-height: 1.3;
+      line-height: 1.35;
       padding: 2mm 0;
     }
     .center { text-align: center; }
     .right { text-align: right; }
     .bold { font-weight: bold; }
-    .title { font-size: 15px; font-weight: bold; text-transform: uppercase; margin-bottom: 2px; }
+    .title { font-size: 15px; font-weight: 800; text-transform: uppercase; margin-bottom: 2px; letter-spacing: 0.04em; }
     .sub { font-size: 10px; margin-bottom: 2px; }
     .dashed { border-top: 1px dashed #000; margin: 5px 0; }
     .double { border-top: 2px solid #000; margin: 5px 0; }
     .row { display: flex; justify-content: space-between; margin-bottom: 2px; }
-    table { width: 100%; border-collapse: collapse; margin: 4px 0; }
-    th { text-align: left; border-bottom: 1px dashed #000; padding: 3px 0; font-size: 10px; font-weight: bold; }
-    td { padding: 3px 0; font-size: 11px; vertical-align: top; }
-    .total-row { font-size: 13px; font-weight: bold; margin: 4px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 5px 0; }
+    th { text-align: left; border-bottom: 1px dashed #000; padding: 4px 0; font-size: 10px; font-weight: bold; text-transform: uppercase; }
+    td { padding: 4px 0; font-size: 10.5px; vertical-align: top; }
+    .item-title { font-weight: bold; font-size: 11px; }
+    .item-sizes { font-size: 9.5px; color: #222; margin-top: 2px; }
+    .total-row { font-size: 13px; font-weight: 800; margin: 5px 0; }
     .barcode-wrap { text-align: center; margin: 6px 0 2px; }
     .barcode-wrap svg { max-width: 95%; height: auto; }
-    .footer { font-size: 9.5px; text-align: center; margin-top: 4px; }
+    .footer { font-size: 10px; text-align: center; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -137,7 +279,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
   </div>
 
   <div class="double"></div>
-  <div class="center bold">RETAIL TAX INVOICE</div>
+  <div class="center bold" style="letter-spacing: 0.05em; font-size: 11px;">RETAIL TAX INVOICE</div>
   <div class="dashed"></div>
 
   <div class="row"><span>Bill No:</span><span class="bold">${escapeXml(billNo)}</span></div>
@@ -145,58 +287,56 @@ function generateInvoiceHtml(bill, printType = "a4") {
   <div class="row"><span>Customer:</span><span class="bold">${escapeXml(custName)}</span></div>
   ${custPhone ? `<div class="row"><span>Phone:</span><span>${escapeXml(custPhone)}</span></div>` : ""}
   <div class="row"><span>Pay Mode:</span><span class="bold">${escapeXml(paymentMode)}</span></div>
-  <div class="row"><span>Status:</span><span class="bold">${escapeXml(status.toUpperCase())}</span></div>
+  <div class="row"><span>Status:</span><span class="bold">${escapeXml(status)}</span></div>
 
   <div class="dashed"></div>
 
   <table>
     <thead>
       <tr>
-        <th style="width: 48%;">Item</th>
-        <th style="width: 14%; text-align: center;">Sz</th>
-        <th style="width: 14%; text-align: center;">Qty</th>
-        <th style="width: 24%; text-align: right;">Total</th>
+        <th style="width: 52%;">Item Description</th>
+        <th style="width: 14%; text-align: center;">Pairs</th>
+        <th style="width: 16%; text-align: right;">Rate</th>
+        <th style="width: 18%; text-align: right;">Amount</th>
       </tr>
     </thead>
     <tbody>
-      ${items.map((it) => {
-      const rate = Number(it.selling_price ?? it.price ?? 0);
-      const qty = Number(it.quantity ?? 1);
-      const total = Number(it.total_price ?? rate * qty ?? 0);
-      return `
-          <tr>
-            <td>
-              <div class="bold">${escapeXml(it.product_name)}</div>
-              ${it.product_code ? `<div style="font-size: 9px; color: #444;">${escapeXml(it.product_code)}</div>` : ""}
-            </td>
-            <td style="text-align: center;">${it.size ? escapeXml(it.size) : "-"}</td>
-            <td style="text-align: center;">${qty}</td>
-            <td style="text-align: right;" class="bold">₹${total.toFixed(2)}</td>
-          </tr>
-        `;
-    }).join("")}
+      ${groupedItems.length === 0 ? `
+        <tr><td colspan="4" style="text-align: center; padding: 6px 0;">No items in invoice</td></tr>
+      ` : groupedItems.map((grp) => `
+        <tr>
+          <td>
+            <div class="item-title">${escapeXml(grp.product_name)}</div>
+            <div class="item-sizes">${escapeXml(grp.size_breakdown_text)}</div>
+          </td>
+          <td style="text-align: center;" class="bold">${grp.total_quantity}</td>
+          <td style="text-align: right;">${grp.selling_price.toFixed(2)}</td>
+          <td style="text-align: right;" class="bold">${grp.total_price.toFixed(2)}</td>
+        </tr>
+      `).join("")}
     </tbody>
   </table>
 
   <div class="dashed"></div>
 
-  <div class="row"><span>Subtotal:</span><span>₹${subtotal.toFixed(2)}</span></div>
-  ${discount > 0 ? `<div class="row"><span>Discount:</span><span>- ₹${discount.toFixed(2)}</span></div>` : ""}
-  ${tax > 0 ? `<div class="row"><span>Tax/GST:</span><span>+ ₹${tax.toFixed(2)}</span></div>` : ""}
-  ${roundOff !== 0 ? `<div class="row"><span>Round Off:</span><span>₹${roundOff.toFixed(2)}</span></div>` : ""}
+  <div class="row"><span>Subtotal:</span><span>${formatCurrency(totals.subtotal)}</span></div>
+  ${totals.discountAmount > 0 ? `<div class="row"><span>Discount${totals.discountPercent > 0 ? ` (${totals.discountPercent}%)` : ""}:</span><span>- ${formatCurrency(totals.discountAmount)}</span></div>` : ""}
+  ${totals.deliveryCharges > 0 ? `<div class="row"><span>Delivery / Transport:</span><span>+ ${formatCurrency(totals.deliveryCharges)}</span></div>` : ""}
+  ${totals.tax > 0 ? `<div class="row"><span>Tax/GST:</span><span>+ ${formatCurrency(totals.tax)}</span></div>` : ""}
+  ${totals.roundOff !== 0 ? `<div class="row"><span>Round Off:</span><span>${totals.roundOff > 0 ? "+" : ""}${formatCurrency(totals.roundOff)}</span></div>` : ""}
 
   <div class="dashed"></div>
   <div class="row total-row">
     <span>GRAND TOTAL:</span>
-    <span>₹${grandTotal.toFixed(2)}</span>
+    <span>${formatCurrency(totals.grandTotal)}</span>
   </div>
 
-  ${paymentMode === "Add in Account" || status.toLowerCase() === "unpaid" ? `
-    <div class="row"><span>Amount Paid:</span><span>₹${received.toFixed(2)}</span></div>
-    <div class="row bold" style="color: #b91c1c;"><span>Outstanding:</span><span>₹${(outstanding || Math.max(0, grandTotal - received)).toFixed(2)}</span></div>
+  ${totals.isAccount ? `
+    <div class="row"><span>Amount Paid:</span><span>${formatCurrency(totals.amountReceived)}</span></div>
+    <div class="row bold" style="color: #b91c1c;"><span>Balance Due:</span><span>${formatCurrency(totals.outstandingAmount)}</span></div>
   ` : `
-    ${received > 0 ? `<div class="row"><span>Received:</span><span>₹${received.toFixed(2)}</span></div>` : ""}
-    ${change > 0 ? `<div class="row"><span>Change:</span><span>₹${change.toFixed(2)}</span></div>` : ""}
+    ${totals.amountReceived > 0 ? `<div class="row"><span>Received:</span><span>${formatCurrency(totals.amountReceived)}</span></div>` : ""}
+    ${totals.changeReturned > 0 ? `<div class="row"><span>Change Return:</span><span>${formatCurrency(totals.changeReturned)}</span></div>` : ""}
   `}
 
   <div class="dashed"></div>
@@ -206,8 +346,8 @@ function generateInvoiceHtml(bill, printType = "a4") {
   </div>
 
   <div class="footer">
-    <div>Exchange allowed within 7 days in unworn condition.</div>
     <div class="bold" style="margin-top: 3px;">Thank You for Shopping at SWAMIDATT FOOTWEAR!</div>
+    <div style="font-size: 9px; margin-top: 1px;">Visit Again.</div>
   </div>
 
   <script>
@@ -268,7 +408,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
     }
     .meta-col { display: flex; flex-direction: column; gap: 4px; }
     .meta-row { display: flex; gap: 10px; }
-    .meta-label { color: #64748b; font-weight: 600; min-width: 90px; }
+    .meta-label { color: #64748b; font-weight: 600; min-width: 95px; }
     .meta-val { color: #0f172a; font-weight: 500; }
     .meta-val.bold { font-weight: 700; }
     .meta-val.highlight { font-weight: 800; color: #2563eb; font-family: monospace; font-size: 9.5pt; }
@@ -306,7 +446,16 @@ function generateInvoiceHtml(bill, printType = "a4") {
       color: #1e293b;
     }
     .item-name { font-weight: 700; color: #0f172a; font-size: 9pt; }
-    .item-code { font-size: 7.5pt; color: #64748b; font-family: monospace; }
+    .size-pill {
+      display: inline-block;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 3px 7px;
+      font-size: 8.2pt;
+      color: #334155;
+      font-weight: 500;
+    }
     .summary-grid {
       display: flex;
       justify-content: space-between;
@@ -314,29 +463,28 @@ function generateInvoiceHtml(bill, printType = "a4") {
       gap: 24px;
       margin-bottom: 16px;
     }
-    .terms-card {
+    .note-card {
       flex: 1;
-      background: #fafafa;
-      border: 1px solid #f1f5f9;
-      border-radius: 6px;
-      padding: 10px 14px;
-      font-size: 8pt;
-      color: #64748b;
-    }
-    .terms-card h4 {
-      font-size: 8pt;
-      font-weight: 700;
-      color: #475569;
-      text-transform: uppercase;
-      margin-bottom: 5px;
-    }
-    .terms-card ul { padding-left: 16px; margin: 0; line-height: 1.45; }
-    .calc-card {
-      width: 250px;
       background: #f8fafc;
       border: 1px solid #e2e8f0;
       border-radius: 6px;
       padding: 10px 14px;
+      font-size: 8.5pt;
+      color: #475569;
+    }
+    .note-card h4 {
+      font-size: 8pt;
+      font-weight: 700;
+      color: #334155;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .calc-card {
+      width: 270px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 12px 14px;
       font-size: 8.8pt;
     }
     .calc-row {
@@ -357,7 +505,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
-      margin-top: 18px;
+      margin-top: 20px;
       padding-top: 12px;
       border-top: 1px dashed #cbd5e1;
     }
@@ -408,7 +556,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
       ${billingAddr ? `<div class="meta-row"><span class="meta-label">Address:</span><span class="meta-val">${escapeXml(billingAddr)}</span></div>` : ""}
       <div class="meta-row">
         <span class="meta-label">Status:</span>
-        <span class="status-badge ${status.toLowerCase() === "unpaid" ? "unpaid" : "paid"}">${escapeXml(status)}</span>
+        <span class="status-badge ${totals.isAccount ? "unpaid" : "paid"}">${escapeXml(status)}</span>
       </div>
     </div>
   </div>
@@ -416,62 +564,56 @@ function generateInvoiceHtml(bill, printType = "a4") {
   <table class="items-table">
     <thead>
       <tr>
-        <th style="width: 35px; text-align: center;">#</th>
-        <th>Product Description</th>
-        <th style="width: 80px; text-align: center;">Size</th>
-        <th style="width: 60px; text-align: center;">Qty</th>
-        <th style="width: 100px; text-align: right;">Unit Price (₹)</th>
-        <th style="width: 110px; text-align: right;">Total Price (₹)</th>
+        <th style="width: 38px; text-align: center;">#</th>
+        <th style="min-width: 180px;">Item Description</th>
+        <th style="width: 230px;">Size-wise Quantity</th>
+        <th style="width: 75px; text-align: center;">Total Pairs</th>
+        <th style="width: 95px; text-align: right;">Unit Price (₹)</th>
+        <th style="width: 105px; text-align: right;">Amount (₹)</th>
       </tr>
     </thead>
     <tbody>
-      ${items.map((it, idx) => {
-    const rate = Number(it.selling_price ?? it.price ?? 0);
-    const qty = Number(it.quantity ?? 1);
-    const total = Number(it.total_price ?? rate * qty ?? 0);
-    return `
-          <tr>
-            <td style="text-align: center;">${idx + 1}</td>
-            <td>
-              <div class="item-name">${escapeXml(it.product_name)}</div>
-              ${it.product_code || it.barcode ? `<div class="item-code">Code: ${escapeXml(it.product_code || it.barcode)}</div>` : ""}
-            </td>
-            <td style="text-align: center;">${it.size ? `Size ${escapeXml(it.size)}` : "—"}</td>
-            <td style="text-align: center; font-weight: bold;">${qty}</td>
-            <td style="text-align: right;">${rate.toFixed(2)}</td>
-            <td style="text-align: right; font-weight: bold;">${total.toFixed(2)}</td>
-          </tr>
-        `;
-  }).join("")}
+      ${groupedItems.length === 0 ? `
+        <tr><td colspan="6" style="text-align: center; padding: 14px; color: #64748b;">No items in this invoice.</td></tr>
+      ` : groupedItems.map((grp, idx) => `
+        <tr>
+          <td style="text-align: center;">${idx + 1}</td>
+          <td>
+            <div class="item-name">${escapeXml(grp.product_name)}</div>
+          </td>
+          <td>
+            <span class="size-pill">${escapeXml(grp.size_breakdown_text)}</span>
+          </td>
+          <td style="text-align: center; font-weight: bold;">${grp.total_quantity}</td>
+          <td style="text-align: right;">${grp.selling_price.toFixed(2)}</td>
+          <td style="text-align: right; font-weight: bold;">${grp.total_price.toFixed(2)}</td>
+        </tr>
+      `).join("")}
     </tbody>
   </table>
 
   <div class="summary-grid">
-    <div class="terms-card">
-      <h4>Terms &amp; Conditions</h4>
-      <ul>
-        <li>Goods once sold will not be refunded.</li>
-        <li>Exchange allowed within 7 days with this original invoice receipt.</li>
-        <li>Footwear must be in unworn, original box condition.</li>
-        <li>No guarantee on discount / clearance sale footwear.</li>
-      </ul>
+    <div class="note-card" style="visibility: ${bill.description ? "visible" : "hidden"};">
+      <h4>Invoice Note</h4>
+      <div>${escapeXml(bill.description || "")}</div>
     </div>
 
     <div class="calc-card">
-      <div class="calc-row"><span>Subtotal:</span><span>₹${subtotal.toFixed(2)}</span></div>
-      ${discount > 0 ? `<div class="calc-row" style="color: #15803d;"><span>Discount:</span><span>- ₹${discount.toFixed(2)}</span></div>` : ""}
-      ${tax > 0 ? `<div class="calc-row"><span>Tax/GST:</span><span>+ ₹${tax.toFixed(2)}</span></div>` : ""}
-      ${roundOff !== 0 ? `<div class="calc-row"><span>Round Off:</span><span>₹${roundOff.toFixed(2)}</span></div>` : ""}
+      <div class="calc-row"><span>Subtotal:</span><span>${formatCurrency(totals.subtotal)}</span></div>
+      ${totals.discountAmount > 0 ? `<div class="calc-row" style="color: #15803d;"><span>Discount${totals.discountPercent > 0 ? ` (${totals.discountPercent}%)` : ""}:</span><span>- ${formatCurrency(totals.discountAmount)}</span></div>` : ""}
+      ${totals.deliveryCharges > 0 ? `<div class="calc-row"><span>Delivery / Transport:</span><span>+ ${formatCurrency(totals.deliveryCharges)}</span></div>` : ""}
+      ${totals.tax > 0 ? `<div class="calc-row"><span>Tax/GST:</span><span>+ ${formatCurrency(totals.tax)}</span></div>` : ""}
+      ${totals.roundOff !== 0 ? `<div class="calc-row"><span>Round Off:</span><span>${totals.roundOff > 0 ? "+" : ""}${formatCurrency(totals.roundOff)}</span></div>` : ""}
       <div class="calc-row grand-total">
         <span>Grand Total:</span>
-        <span>₹${grandTotal.toFixed(2)}</span>
+        <span>${formatCurrency(totals.grandTotal)}</span>
       </div>
-      ${paymentMode === "Add in Account" || status.toLowerCase() === "unpaid" ? `
-        <div class="calc-row" style="margin-top: 4px;"><span>Amount Paid:</span><span>₹${received.toFixed(2)}</span></div>
-        <div class="calc-row" style="color: #b91c1c; font-weight: bold;"><span>Outstanding:</span><span>₹${(outstanding || Math.max(0, grandTotal - received)).toFixed(2)}</span></div>
+      ${totals.isAccount ? `
+        <div class="calc-row" style="margin-top: 4px;"><span>Amount Paid:</span><span>${formatCurrency(totals.amountReceived)}</span></div>
+        <div class="calc-row" style="color: #b91c1c; font-weight: bold;"><span>Balance Due:</span><span>${formatCurrency(totals.outstandingAmount)}</span></div>
       ` : `
-        ${received > 0 ? `<div class="calc-row" style="margin-top: 4px;"><span>Received:</span><span>₹${received.toFixed(2)}</span></div>` : ""}
-        ${change > 0 ? `<div class="calc-row"><span>Change:</span><span>₹${change.toFixed(2)}</span></div>` : ""}
+        ${totals.amountReceived > 0 ? `<div class="calc-row" style="margin-top: 4px;"><span>Amount Received:</span><span>${formatCurrency(totals.amountReceived)}</span></div>` : ""}
+        ${totals.changeReturned > 0 ? `<div class="calc-row"><span>Change Return:</span><span>${formatCurrency(totals.changeReturned)}</span></div>` : ""}
       `}
     </div>
   </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, Fragment } from 'react'
+import React, { useEffect, useRef, useState, useMemo, useCallback, Fragment } from 'react'
 import { API_BASE_URL, SHOP_INFO } from '../config'
 import { useAuth } from '../context/AuthContext'
 import InvoiceModal from '../components/InvoiceModal'
@@ -17,7 +17,7 @@ import {
   ArrowLeftIcon,
 } from '../components/Icons'
 
-const DEFAULT_SIZES_FALLBACK = [6, 7, 8, 9, 10, 11].map((s) => ({ size: s, stock_quantity: 10 }))
+const DEFAULT_SIZES_FALLBACK = []
 
 // Helper to ensure backward compatibility and grouped cart structure
 const migrateCartToGrouped = (items) => {
@@ -43,10 +43,10 @@ const migrateCartToGrouped = (items) => {
     }
     const group = groupsMap.get(key)
     group.sizes.push({
-      size: item.size || 7,
+      size: item.size || '',
       quantity: Number(item.quantity || 1),
       selling_price: Number(item.selling_price || 0),
-      max_stock: Number(item.max_stock || 999),
+      max_stock: Number(item.max_stock ?? 0),
       total: Math.round(Number(item.quantity || 1) * Number(item.selling_price || 0) * 100) / 100,
     })
   }
@@ -62,6 +62,16 @@ export default function BillingPage() {
   const [customers, setCustomers] = useState([])
   const [nextInvoiceNo, setNextInvoiceNo] = useState('SW-1031')
   const [loading, setLoading] = useState(false)
+
+  // Get exact available stock for a product ID and size variant
+  const getAvailableStockForProductSize = useCallback((productId, sizeNum, catalog = products) => {
+    if (!productId || sizeNum === '' || sizeNum === null || sizeNum === undefined) return 0
+    const prod = catalog.find((p) => String(p.id) === String(productId))
+    if (!prod) return 0
+    const sizes = Array.isArray(prod.sizes) ? prod.sizes : []
+    const szObj = sizes.find((s) => Number(s.size) === Number(sizeNum))
+    return szObj ? Number(szObj.stock_quantity ?? szObj.stock ?? 0) : 0
+  }, [products])
 
   // Top Section Fields
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
@@ -96,6 +106,8 @@ export default function BillingPage() {
   const [paymentMode, setPaymentMode] = useState('Cash') // 'Cash' | 'UPI' | 'Add in Account'
   const [descriptionNotes, setDescriptionNotes] = useState('')
   const [isRoundOff, setIsRoundOff] = useState(true)
+  const [discountPercent, setDiscountPercent] = useState('0')
+  const [deliveryCharges, setDeliveryCharges] = useState('0')
   const [amountReceived, setAmountReceived] = useState('')
   const [heldBills, setHeldBills] = useState([])
 
@@ -277,7 +289,7 @@ export default function BillingPage() {
     if (Array.isArray(product.sizes) && product.sizes.length > 0) {
       productSizes = product.sizes
     } else {
-      productSizes = DEFAULT_SIZES_FALLBACK
+      productSizes = []
     }
 
     const defaultPrice = existingGroup
@@ -527,13 +539,13 @@ export default function BillingPage() {
       barcode: '',
       common_price: 0,
       is_expanded: true,
-      available_sizes: DEFAULT_SIZES_FALLBACK,
+      available_sizes: [],
       sizes: [],
     }
     setCartItems((prev) => [...prev, blankGroup])
   }
 
-  // Manual Row Product Selection -> Opens Multi-Size Modal for chosen model
+  // Manual Row Product Selection -> Directly adds model to table with inline size selector (NO modal popup)
   const handleManualRowProductSelect = (groupIndex, productId) => {
     if (!productId) {
       setCartItems((prev) => {
@@ -555,8 +567,48 @@ export default function BillingPage() {
     const prod = products.find((p) => String(p.id) === String(productId))
     if (!prod) return
 
-    // Open multi-size selector for selected product
-    openMultiSizeModal(prod, groupIndex)
+    const unitSellingPrice = Number(prod.selling_price || 0)
+    const availableSizes = Array.isArray(prod.sizes) && prod.sizes.length > 0 ? prod.sizes : []
+    const singleSize = availableSizes.length === 1 ? Number(availableSizes[0].size) : ''
+    const singleStock = availableSizes.length === 1 ? Number(availableSizes[0].stock_quantity ?? availableSizes[0].stock ?? 0) : 0
+
+    if (singleSize !== '' && singleStock < 1) {
+      playBeep('error')
+      setAlertMsg({
+        type: 'error',
+        text: `Insufficient stock for "${prod.product_name}" (Size ${singleSize}). Available: 0, Requested: 1.`,
+      })
+      return
+    }
+
+    setCartItems((prev) => {
+      const copy = [...prev]
+      copy[groupIndex] = {
+        ...copy[groupIndex],
+        product_id: prod.id,
+        product_name: prod.product_name,
+        product_code: prod.product_code || `FW-${prod.id}`,
+        barcode: prod.barcode || '',
+        common_price: unitSellingPrice,
+        is_expanded: true,
+        available_sizes: availableSizes,
+        sizes: [
+          {
+            size: singleSize,
+            quantity: 1,
+            selling_price: unitSellingPrice,
+            max_stock: singleStock,
+            total: unitSellingPrice,
+          },
+        ],
+      }
+      return copy
+    })
+
+    setAlertMsg({
+      type: 'info',
+      text: `Selected "${prod.product_name}". ${singleSize ? `Size ${singleSize} added.` : 'Please choose shoe size in the table row.'}`,
+    })
   }
 
   // Toggle Expand / Collapse of Footwear Group
@@ -578,37 +630,311 @@ export default function BillingPage() {
       grp.sizes = (grp.sizes || []).map((sz) => ({
         ...sz,
         selling_price: p,
-        total: Math.round(sz.quantity * p * 100) / 100,
+        total: Math.round(Number(sz.quantity || 0) * p * 100) / 100,
       }))
       copy[groupIndex] = grp
       return copy
     })
   }
 
-  // Update Individual Size Quantity in Group (with stock validation)
-  const handleUpdateSizeQtyInGroup = (groupIndex, sizeIndex, val) => {
-    const q = Math.max(1, parseInt(val, 10) || 1)
-    setCartItems((prev) => {
-      const copy = [...prev]
-      const grp = { ...copy[groupIndex] }
-      const szs = [...grp.sizes]
-      const sz = { ...szs[sizeIndex] }
+  // Step Quantity (+ / -) directly in Table Row with Stock Bounds
+  const handleStepSizeQty = (groupIndex, sizeIndex, delta) => {
+    const grp = cartItems[groupIndex]
+    if (!grp) return
+    const sz = grp.sizes?.[sizeIndex]
+    if (!sz) return
 
-      if (q > sz.max_stock && sz.max_stock > 0) {
+    const currentQty = Number(sz.quantity) || 1
+    const targetQty = currentQty + delta
+
+    if (targetQty < 1) return
+
+    if (delta > 0) {
+      const availStock = getAvailableStockForProductSize(grp.product_id, sz.size)
+      let currentTotalForSize = 0
+      cartItems.forEach((g) => {
+        if (g.product_id === grp.product_id) {
+          (g.sizes || []).forEach((s) => {
+            if (Number(s.size) === Number(sz.size)) {
+              currentTotalForSize += (Number(s.quantity) || 0)
+            }
+          })
+        }
+      })
+      const newTotalForSize = currentTotalForSize + delta
+      if (newTotalForSize > availStock) {
+        playBeep('error')
         setAlertMsg({
           type: 'error',
-          text: `Cannot exceed available stock (${sz.max_stock}) for Size ${sz.size}.`,
+          text: `Insufficient stock for "${grp.product_name}" (Size ${sz.size}). Available: ${availStock}, Requested: ${newTotalForSize}.`,
         })
-        sz.quantity = sz.max_stock
-      } else {
-        sz.quantity = q
+        return
       }
+    }
 
-      sz.total = Math.round(sz.quantity * sz.selling_price * 100) / 100
-      szs[sizeIndex] = sz
-      grp.sizes = szs
-      copy[groupIndex] = grp
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const g = { ...copy[groupIndex] }
+      const szs = [...g.sizes]
+      const s = { ...szs[sizeIndex] }
+      s.quantity = targetQty
+      s.max_stock = getAvailableStockForProductSize(g.product_id, s.size)
+      s.total = Math.round(targetQty * s.selling_price * 100) / 100
+      szs[sizeIndex] = s
+      g.sizes = szs
+      copy[groupIndex] = g
       return copy
+    })
+  }
+
+  // Update Individual Size Quantity in Group (with stock validation)
+  const handleUpdateSizeQtyInGroup = (groupIndex, sizeIndex, val) => {
+    const grp = cartItems[groupIndex]
+    if (!grp) return
+    const sz = grp.sizes?.[sizeIndex]
+    if (!sz) return
+
+    const prevValidQty = Number(sz.quantity) || 1
+
+    if (val === '') {
+      setCartItems((prev) => {
+        const copy = [...prev]
+        const g = { ...copy[groupIndex] }
+        const szs = [...g.sizes]
+        szs[sizeIndex] = { ...szs[sizeIndex], quantity: '' }
+        g.sizes = szs
+        copy[groupIndex] = g
+        return copy
+      })
+      return
+    }
+
+    const q = parseInt(val, 10)
+    if (isNaN(q) || q < 1) {
+      setCartItems((prev) => {
+        const copy = [...prev]
+        const g = { ...copy[groupIndex] }
+        const szs = [...g.sizes]
+        szs[sizeIndex] = {
+          ...szs[sizeIndex],
+          quantity: prevValidQty,
+          total: Math.round(prevValidQty * szs[sizeIndex].selling_price * 100) / 100,
+        }
+        g.sizes = szs
+        copy[groupIndex] = g
+        return copy
+      })
+      return
+    }
+
+    const availStock = getAvailableStockForProductSize(grp.product_id, sz.size)
+
+    let otherRowsQty = 0
+    cartItems.forEach((g, gIdx) => {
+      if (g.product_id === grp.product_id) {
+        (g.sizes || []).forEach((s, sIdx) => {
+          if (Number(s.size) === Number(sz.size) && !(gIdx === groupIndex && sIdx === sizeIndex)) {
+            otherRowsQty += (Number(s.quantity) || 0)
+          }
+        })
+      }
+    })
+
+    const totalRequested = otherRowsQty + q
+
+    if (totalRequested > availStock) {
+      playBeep('error')
+      setAlertMsg({
+        type: 'error',
+        text: `Insufficient stock for "${grp.product_name}" (Size ${sz.size}). Available: ${availStock}, Requested: ${totalRequested}.`,
+      })
+      // REJECT and restore the previous valid quantity!
+      setCartItems((prev) => {
+        const copy = [...prev]
+        const g = { ...copy[groupIndex] }
+        const szs = [...g.sizes]
+        szs[sizeIndex] = {
+          ...szs[sizeIndex],
+          quantity: prevValidQty,
+          max_stock: availStock,
+          total: Math.round(prevValidQty * szs[sizeIndex].selling_price * 100) / 100,
+        }
+        g.sizes = szs
+        copy[groupIndex] = g
+        return copy
+      })
+      return
+    }
+
+    // Valid quantity: apply
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const g = { ...copy[groupIndex] }
+      const szs = [...g.sizes]
+      szs[sizeIndex] = {
+        ...szs[sizeIndex],
+        quantity: q,
+        max_stock: availStock,
+        total: Math.round(q * szs[sizeIndex].selling_price * 100) / 100,
+      }
+      g.sizes = szs
+      copy[groupIndex] = g
+      return copy
+    })
+  }
+
+  const handleBlurSizeQtyInGroup = (groupIndex, sizeIndex) => {
+    setCartItems((prev) => {
+      const grp = prev[groupIndex]
+      if (!grp) return prev
+      const sz = grp.sizes?.[sizeIndex]
+      if (!sz) return prev
+      if (sz.quantity === '' || isNaN(Number(sz.quantity)) || Number(sz.quantity) < 1) {
+        const availStock = getAvailableStockForProductSize(grp.product_id, sz.size)
+        const copy = [...prev]
+        const g = { ...copy[groupIndex] }
+        const szs = [...g.sizes]
+        const safeQty = availStock >= 1 ? 1 : 0
+        szs[sizeIndex] = {
+          ...szs[sizeIndex],
+          quantity: safeQty,
+          max_stock: availStock,
+          total: Math.round(safeQty * szs[sizeIndex].selling_price * 100) / 100,
+        }
+        g.sizes = szs
+        copy[groupIndex] = g
+        return copy
+      }
+      return prev
+    })
+  }
+
+  // Inline Shoe Size Selector in Table Row (Switches size, updates stock, merges duplicates)
+  const handleInlineChangeSize = (groupIndex, sizeIndex, newSizeVal) => {
+    if (!newSizeVal && newSizeVal !== 0) {
+      setCartItems((prev) => {
+        const copy = [...prev]
+        const grp = { ...copy[groupIndex] }
+        const szs = [...grp.sizes]
+        szs[sizeIndex] = { ...szs[sizeIndex], size: '', max_stock: 0, total: 0 }
+        grp.sizes = szs
+        copy[groupIndex] = grp
+        return copy
+      })
+      return
+    }
+
+    const grp = cartItems[groupIndex]
+    if (!grp) return
+    const targetSize = Number(newSizeVal)
+    const currentSz = grp.sizes?.[sizeIndex]
+    const reqQty = Number(currentSz?.quantity) || 1
+    const availStock = getAvailableStockForProductSize(grp.product_id, targetSize)
+
+    // Check if another subrow for targetSize already exists in this group
+    const existingOtherIdx = (grp.sizes || []).findIndex((s, idx) => idx !== sizeIndex && Number(s.size) === targetSize)
+    const otherQty = existingOtherIdx >= 0 ? (Number(grp.sizes[existingOtherIdx].quantity) || 0) : 0
+    const totalRequested = otherQty + reqQty
+
+    if (availStock < 1 || totalRequested > availStock) {
+      playBeep('error')
+      setAlertMsg({
+        type: 'error',
+        text: `Insufficient stock for "${grp.product_name}" (Size ${targetSize}). Available: ${availStock}, Requested: ${totalRequested}.`,
+      })
+      // Keep previous valid cart unchanged
+      return
+    }
+
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const g = { ...copy[groupIndex] }
+      let szs = [...g.sizes]
+
+      if (existingOtherIdx >= 0) {
+        // Merge into existing row for that size and remove this row
+        const existingRow = szs[existingOtherIdx]
+        const mergedQty = existingRow.quantity + reqQty
+        szs[existingOtherIdx] = {
+          ...existingRow,
+          quantity: mergedQty,
+          max_stock: availStock,
+          total: Math.round(mergedQty * existingRow.selling_price * 100) / 100,
+        }
+        szs = szs.filter((_, idx) => idx !== sizeIndex)
+      } else {
+        const p = szs[sizeIndex].selling_price || g.common_price || 0
+        szs[sizeIndex] = {
+          ...szs[sizeIndex],
+          size: targetSize,
+          max_stock: availStock,
+          total: Math.round(reqQty * p * 100) / 100,
+        }
+      }
+      g.sizes = szs
+      copy[groupIndex] = g
+      return copy
+    })
+    playBeep('success')
+    setAlertMsg({
+      type: 'success',
+      text: `Selected Size ${targetSize} for "${grp.product_name}". Available: ${availStock}.`,
+    })
+  }
+
+  // Quick Add Size Variant to Group
+  const handleAddSizeVariant = (groupIndex, sizeVal) => {
+    if (!sizeVal && sizeVal !== 0) return
+    const grp = cartItems[groupIndex]
+    if (!grp) return
+    const targetSize = Number(sizeVal)
+    const availStock = getAvailableStockForProductSize(grp.product_id, targetSize)
+
+    // Check if this size is already in grp.sizes
+    const existingIdx = (grp.sizes || []).findIndex((s) => Number(s.size) === targetSize)
+    const currentQty = existingIdx >= 0 ? (Number(grp.sizes[existingIdx].quantity) || 0) : 0
+    const totalRequested = currentQty + 1
+
+    if (availStock < 1 || totalRequested > availStock) {
+      playBeep('error')
+      setAlertMsg({
+        type: 'error',
+        text: `Insufficient stock for "${grp.product_name}" (Size ${targetSize}). Available: ${availStock}, Requested: ${totalRequested}.`,
+      })
+      return
+    }
+
+    setCartItems((prev) => {
+      const copy = [...prev]
+      const g = { ...copy[groupIndex], is_expanded: true }
+      const szs = [...(g.sizes || [])]
+
+      if (existingIdx >= 0) {
+        const cur = szs[existingIdx]
+        szs[existingIdx] = {
+          ...cur,
+          quantity: totalRequested,
+          max_stock: availStock,
+          total: Math.round(totalRequested * cur.selling_price * 100) / 100,
+        }
+      } else {
+        const price = g.common_price || 0
+        szs.push({
+          size: targetSize,
+          quantity: 1,
+          selling_price: price,
+          max_stock: availStock,
+          total: price,
+        })
+      }
+      g.sizes = szs
+      copy[groupIndex] = g
+      return copy
+    })
+    playBeep('success')
+    setAlertMsg({
+      type: 'success',
+      text: `Added Size ${targetSize} for "${grp.product_name}".`,
     })
   }
 
@@ -621,7 +947,7 @@ export default function BillingPage() {
       const szs = [...grp.sizes]
       const sz = { ...szs[sizeIndex] }
       sz.selling_price = p
-      sz.total = Math.round(sz.quantity * p * 100) / 100
+      sz.total = Math.round((Number(sz.quantity) || 0) * p * 100) / 100
       szs[sizeIndex] = sz
       grp.sizes = szs
       copy[groupIndex] = grp
@@ -657,11 +983,14 @@ export default function BillingPage() {
       setCartItems([])
       sessionStorage.removeItem('swamidatt_billing_cart')
       setAmountReceived('')
+      setDiscountPercent('0')
+      setDeliveryCharges('0')
       setAlertMsg({ type: '', text: '' })
     }
   }
 
   // Barcode Scanner Processing (USB / Wireless Keyboard-Emulation Scanner + Enter)
+  // DIRECT SCAN -> Immediately adds product into billing table without modal popup
   const processBarcodeScan = async (rawInput) => {
     const rawCode = String(rawInput || '').replace(/[\r\n]/g, '').trim()
     if (!rawCode) return
@@ -678,13 +1007,29 @@ export default function BillingPage() {
 
     try {
       const cleanUpper = rawCode.toUpperCase()
-      // 1. Search in preloaded products
+
+      // Parse potential size suffix (e.g. FW-0033-8, 890398596302-8, FW-0033/8, FW-0033 8)
+      const sizeSuffixMatch = rawCode.match(/^(.+?)[-_/\s]+([0-9]{1,2})$/)
+      const baseCode = sizeSuffixMatch ? sizeSuffixMatch[1].trim() : rawCode
+      const explicitEncodedSize = sizeSuffixMatch ? parseInt(sizeSuffixMatch[2], 10) : null
+      const baseUpper = baseCode.toUpperCase()
+
+      // 1. Search in preloaded products (direct rawCode or baseCode)
       let found = products.find(
         (p) =>
           (p.barcode && String(p.barcode).trim() === rawCode) ||
           (p.product_code && String(p.product_code).trim().toUpperCase() === cleanUpper) ||
           String(p.id) === rawCode
       )
+
+      if (!found && sizeSuffixMatch) {
+        found = products.find(
+          (p) =>
+            (p.barcode && String(p.barcode).trim() === baseCode) ||
+            (p.product_code && String(p.product_code).trim().toUpperCase() === baseUpper) ||
+            String(p.id) === baseCode
+        )
+      }
 
       // 2. Lookup barcode from API
       if (!found) {
@@ -699,17 +1044,29 @@ export default function BillingPage() {
         }
       }
 
+      if (!found && sizeSuffixMatch) {
+        try {
+          const res = await fetch(`${API_BASE_URL}/products/barcode/${encodeURIComponent(baseCode)}`)
+          if (res.ok) {
+            const data = await res.json()
+            if (data.product) found = data.product
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       // 3. Fallback search
       if (!found) {
         try {
-          const searchRes = await fetch(`${API_BASE_URL}/products?search=${encodeURIComponent(rawCode)}`)
+          const searchRes = await fetch(`${API_BASE_URL}/products?search=${encodeURIComponent(baseCode)}`)
           if (searchRes.ok) {
             const data = await searchRes.json()
             const prods = data.products || []
             found = prods.find(
               (p) =>
-                (p.barcode && String(p.barcode).trim() === rawCode) ||
-                (p.product_code && String(p.product_code).trim().toUpperCase() === cleanUpper)
+                (p.barcode && String(p.barcode).trim() === baseCode) ||
+                (p.product_code && String(p.product_code).trim().toUpperCase() === baseUpper)
             ) || (prods.length === 1 ? prods[0] : null)
           }
         } catch {
@@ -725,15 +1082,82 @@ export default function BillingPage() {
         return
       }
 
-      // Automatically add product to cart using Selling Price (₹) as the billing unit price
-      const unitSellingPrice = Number(found.selling_price || 0)
+      // Fetch fresh product details to ensure latest stock levels
+      try {
+        const freshRes = await fetch(`${API_BASE_URL}/products/${found.id}`)
+        if (freshRes.ok) {
+          const freshData = await freshRes.json()
+          if (freshData.product) {
+            found = freshData.product
+            setProducts((prev) => prev.map((p) => (p.id === found.id ? found : p)))
+          }
+        }
+      } catch {
+        // Fallback to currently known product
+      }
 
-      let defaultSizeNum = 7
-      let maxStock = 999
-      if (Array.isArray(found.sizes) && found.sizes.length > 0) {
-        const inStockSize = found.sizes.find((s) => Number(s.stock_quantity ?? s.stock ?? 0) > 0) || found.sizes[0]
-        defaultSizeNum = Number(inStockSize.size || 7)
-        maxStock = Number(inStockSize.stock_quantity ?? inStockSize.stock ?? 999)
+      // Selling Price (₹) MUST strictly be used as the billing unit rate (never purchase/cost price)
+      const unitSellingPrice = Number(found.selling_price || 0)
+      const availableSizes = Array.isArray(found.sizes) && found.sizes.length > 0 ? found.sizes : []
+
+      // Determine size:
+      // If barcode encoded a size, use that size.
+      // If no size encoded, and product has only 1 size variant, use that single size.
+      // If no size encoded and product has multiple sizes: DO NOT GUESS THE SHOE SIZE.
+      const detectedSize = explicitEncodedSize !== null ? explicitEncodedSize : (found.scanned_size !== undefined && found.scanned_size !== null ? Number(found.scanned_size) : null)
+
+      let initialSize = ''
+      let initialMaxStock = 0
+
+      if (detectedSize !== null) {
+        const szObj = availableSizes.find((s) => Number(s.size) === detectedSize)
+        initialSize = detectedSize
+        initialMaxStock = szObj ? Number(szObj.stock_quantity ?? szObj.stock ?? 0) : 0
+      } else if (availableSizes.length === 1) {
+        initialSize = Number(availableSizes[0].size)
+        initialMaxStock = Number(availableSizes[0].stock_quantity ?? availableSizes[0].stock ?? 0)
+      } else {
+        // Multiple sizes and no size encoded in barcode: DO NOT GUESS SHOE SIZE
+        initialSize = ''
+        initialMaxStock = 0
+      }
+
+      // If a specific size was identified, validate stock BEFORE modifying cart:
+      if (initialSize !== '') {
+        let currentCartQty = 0
+        cartItems.forEach((grp) => {
+          if (grp.product_id === found.id) {
+            (grp.sizes || []).forEach((sz) => {
+              if (Number(sz.size) === Number(initialSize)) {
+                currentCartQty += (Number(sz.quantity) || 0)
+              }
+            })
+          }
+        })
+        const newTotal = currentCartQty + 1
+        if (initialMaxStock < 1 || newTotal > initialMaxStock) {
+          playBeep('error')
+          setAlertMsg({
+            type: 'error',
+            text: `Insufficient stock for "${found.product_name}" (Size ${initialSize}). Available: ${initialMaxStock}, Requested: ${newTotal}.`,
+          })
+          setScannerStatus({ type: 'error', text: `Stock Out: ${found.product_name} (Sz ${initialSize})` })
+          setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2500)
+          return // Cart remains completely unchanged!
+        }
+      } else {
+        // No specific size identified (product has multiple sizes)
+        const totalModelStock = availableSizes.reduce((acc, s) => acc + Number(s.stock_quantity ?? s.stock ?? 0), 0)
+        if (totalModelStock <= 0) {
+          playBeep('error')
+          setAlertMsg({
+            type: 'error',
+            text: `"${found.product_name}" is out of stock across all sizes.`,
+          })
+          setScannerStatus({ type: 'error', text: `Out of Stock: ${found.product_name}` })
+          setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2500)
+          return
+        }
       }
 
       setCartItems((prev) => {
@@ -741,70 +1165,108 @@ export default function BillingPage() {
         const existingIdx = copy.findIndex((grp) => grp.product_id === found.id)
 
         if (existingIdx >= 0) {
-          const grp = { ...copy[existingIdx] }
+          const grp = { ...copy[existingIdx], is_expanded: true, available_sizes: availableSizes }
           const sizes = [...(grp.sizes || [])]
-          const sizeIdx = sizes.findIndex((s) => Number(s.size) === defaultSizeNum)
 
-          if (sizeIdx >= 0) {
-            const currentSize = sizes[sizeIdx]
-            const newQty = currentSize.quantity + 1
-            sizes[sizeIdx] = {
-              ...currentSize,
-              quantity: newQty,
-              selling_price: unitSellingPrice,
-              total: Math.round(newQty * unitSellingPrice * 100) / 100,
+          if (initialSize !== '') {
+            const sizeIdx = sizes.findIndex((s) => Number(s.size) === Number(initialSize))
+            if (sizeIdx >= 0) {
+              const currentSize = sizes[sizeIdx]
+              const newQty = (Number(currentSize.quantity) || 0) + 1
+              sizes[sizeIdx] = {
+                ...currentSize,
+                quantity: newQty,
+                max_stock: initialMaxStock,
+                total: Math.round(newQty * currentSize.selling_price * 100) / 100,
+              }
+              playBeep('success')
+              setAlertMsg({
+                type: 'success',
+                text: `Increased Size ${initialSize} for "${found.product_name}" to ${newQty} pairs.`,
+              })
+            } else {
+              sizes.push({
+                size: initialSize,
+                quantity: 1,
+                selling_price: grp.common_price || unitSellingPrice,
+                max_stock: initialMaxStock,
+                total: grp.common_price || unitSellingPrice,
+              })
+              playBeep('success')
+              setAlertMsg({
+                type: 'success',
+                text: `Added Size ${initialSize} for "${found.product_name}" to bill.`,
+              })
             }
           } else {
-            sizes.push({
-              size: defaultSizeNum,
-              quantity: 1,
-              selling_price: unitSellingPrice,
-              max_stock: maxStock,
-              total: unitSellingPrice,
-            })
+            // No size encoded: check if an unselected row already exists
+            const hasUnselected = sizes.some((s) => !s.size && s.size !== 0)
+            if (hasUnselected) {
+              setAlertMsg({
+                type: 'info',
+                text: `"${found.product_name}" is already in bill. Please choose shoe size in the table row.`,
+              })
+            } else {
+              sizes.push({
+                size: '',
+                quantity: 1,
+                selling_price: grp.common_price || unitSellingPrice,
+                max_stock: 0,
+                total: 0,
+              })
+              setAlertMsg({
+                type: 'info',
+                text: `Added "${found.product_name}". Please choose shoe size in the table row.`,
+              })
+            }
           }
 
-          grp.common_price = unitSellingPrice
           grp.sizes = sizes
           copy[existingIdx] = grp
         } else {
+          // New footwear model group
           copy.push({
-            group_id: `grp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            group_id: `grp-${found.id}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
             product_id: found.id,
             product_name: found.product_name,
             product_code: found.product_code || `FW-${found.id}`,
-            barcode: found.barcode,
+            barcode: found.barcode || '',
             common_price: unitSellingPrice,
             is_expanded: true,
-            available_sizes: found.sizes || DEFAULT_SIZES_FALLBACK,
+            available_sizes: availableSizes,
             sizes: [
               {
-                size: defaultSizeNum,
+                size: initialSize,
                 quantity: 1,
                 selling_price: unitSellingPrice,
-                max_stock: maxStock,
-                total: unitSellingPrice,
+                max_stock: initialMaxStock,
+                total: initialSize !== '' ? unitSellingPrice : 0,
               },
             ],
           })
+
+          playBeep('success')
+          if (initialSize !== '') {
+            setAlertMsg({
+              type: 'success',
+              text: `Added "${found.product_name}" (Size ${initialSize}) to bill at Selling Price ₹${unitSellingPrice.toFixed(2)}.`,
+            })
+          } else {
+            setAlertMsg({
+              type: 'info',
+              text: `Added "${found.product_name}" to bill. Please choose shoe size in the table row.`,
+            })
+          }
         }
         return copy
       })
 
-      playBeep('success')
-      setAlertMsg({
-        type: 'success',
-        text: `Added "${found.product_name}" to bill at Selling Price ₹${unitSellingPrice.toFixed(2)}.`,
-      })
-      setScannerStatus({ type: 'success', text: `Added: ${found.product_name} (₹${unitSellingPrice.toFixed(2)})` })
+      setScannerStatus({ type: 'success', text: `Scanned: ${found.product_name} (₹${unitSellingPrice.toFixed(2)})` })
       setTimeout(() => setScannerStatus({ type: 'ready', text: 'Ready to Scan' }), 2000)
     } finally {
       isProcessingScanRef.current = false
-      // Refocus scanner input
       setTimeout(() => {
-        if (!multiSizeModal.isOpen) {
-          scannerInputRef.current?.focus()
-        }
+        scannerInputRef.current?.focus()
       }, 50)
     }
   }
@@ -856,36 +1318,77 @@ export default function BillingPage() {
   }, [cartItems, isSavingInvoice, showAddCustomerModal, previewModalBill, completedInvoice, multiSizeModal.isOpen])
 
   // Calculations Summary (Direct Price * Quantity flattened from all grouped sizes)
+  // Only valid items with selected size and quantity within live stock are included
   const validItems = useMemo(() => {
     const flat = []
     for (const group of cartItems) {
       if (!group.product_id) continue
       for (const sz of (group.sizes || [])) {
-        if (sz.quantity > 0) {
+        const qty = Number(sz.quantity) || 0
+        const hasValidSize = sz.size !== '' && sz.size !== null && sz.size !== undefined
+        const availStock = getAvailableStockForProductSize(group.product_id, sz.size)
+        if (hasValidSize && qty > 0 && availStock > 0 && qty <= availStock) {
           flat.push({
             product_id: group.product_id,
             product_name: group.product_name,
             product_code: group.product_code,
             barcode: group.barcode,
             size: sz.size,
-            quantity: sz.quantity,
-            selling_price: sz.selling_price,
-            total: Math.round(sz.quantity * sz.selling_price * 100) / 100,
-            max_stock: sz.max_stock,
+            quantity: qty,
+            selling_price: Number(sz.selling_price) || 0,
+            total: Math.round(qty * (Number(sz.selling_price) || 0) * 100) / 100,
+            max_stock: availStock,
             group_id: group.group_id,
           })
         }
       }
     }
     return flat
-  }, [cartItems])
+  }, [cartItems, getAvailableStockForProductSize])
   const subtotal = useMemo(
     () => validItems.reduce((acc, it) => acc + (it.quantity * it.selling_price), 0),
     [validItems]
   )
 
-  const grandTotal = isRoundOff ? Math.round(subtotal) : Math.round(subtotal * 100) / 100
-  const roundOffAmount = isRoundOff ? Math.round((grandTotal - subtotal) * 100) / 100 : 0
+  // Calculations for Discount & Delivery Charges
+  const discPctNum = Math.max(0, Math.min(100, parseFloat(discountPercent) || 0))
+  const deliveryNum = Math.max(0, parseFloat(deliveryCharges) || 0)
+  const discountAmount = Math.round(subtotal * (discPctNum / 100) * 100) / 100
+  const totalBeforeRoundOff = Math.round((subtotal - discountAmount + deliveryNum) * 100) / 100
+  const grandTotal = isRoundOff ? Math.round(totalBeforeRoundOff) : totalBeforeRoundOff
+  const roundOffAmount = isRoundOff ? Math.round((grandTotal - totalBeforeRoundOff) * 100) / 100 : 0
+
+  const handleDiscountPercentChange = (e) => {
+    const val = e.target.value
+    if (val === '') {
+      setDiscountPercent('')
+      return
+    }
+    const num = parseFloat(val)
+    if (isNaN(num)) return
+    if (num < 0) {
+      setDiscountPercent('0')
+    } else if (num > 100) {
+      setDiscountPercent('100')
+    } else {
+      setDiscountPercent(val)
+    }
+  }
+
+  const handleDeliveryChargesChange = (e) => {
+    const val = e.target.value
+    if (val === '') {
+      setDeliveryCharges('')
+      return
+    }
+    const num = parseFloat(val)
+    if (isNaN(num)) return
+    if (num < 0) {
+      setDeliveryCharges('0')
+    } else {
+      setDeliveryCharges(val)
+    }
+  }
 
   const receivedNum = parseFloat(amountReceived) || 0
   const isAccountMode = paymentMode === 'Add in Account'
@@ -911,6 +1414,9 @@ export default function BillingPage() {
       items: cartItems,
       paymentMode,
       descriptionNotes,
+      discountPercent,
+      deliveryCharges,
+      isRoundOff,
     }
     setHeldBills((prev) => [...prev, draft])
     setCartItems([])
@@ -921,7 +1427,37 @@ export default function BillingPage() {
   const handleRestoreHeldBill = (draftId) => {
     const draft = heldBills.find((d) => d.id === draftId)
     if (!draft) return
-    setCartItems(draft.items)
+
+    let hasStockWarning = false
+    const warnings = []
+
+    const updatedItems = (draft.items || []).map((grp) => {
+      const g = { ...grp }
+      const szs = (g.sizes || []).map((sz) => {
+        if (!sz.size && sz.size !== 0) return sz
+        const liveStock = getAvailableStockForProductSize(g.product_id, sz.size)
+        const curQty = Number(sz.quantity) || 1
+        if (curQty > liveStock) {
+          hasStockWarning = true
+          warnings.push(`"${g.product_name}" (Size ${sz.size}): Available ${liveStock}, Held ${curQty}`)
+          const safeQty = Math.max(0, liveStock)
+          return {
+            ...sz,
+            quantity: safeQty,
+            max_stock: liveStock,
+            total: Math.round(safeQty * (Number(sz.selling_price) || 0) * 100) / 100,
+          }
+        }
+        return {
+          ...sz,
+          max_stock: liveStock,
+        }
+      })
+      g.sizes = szs
+      return g
+    })
+
+    setCartItems(updatedItems)
     if (draft.customer) {
       setSelectedCustomerId(String(draft.customer.id))
       setCustomerPhone(draft.customer.phone || '')
@@ -929,8 +1465,21 @@ export default function BillingPage() {
     }
     setPaymentMode(draft.paymentMode || 'Cash')
     setDescriptionNotes(draft.descriptionNotes || '')
+    setDiscountPercent(draft.discountPercent ?? '0')
+    setDeliveryCharges(draft.deliveryCharges ?? '0')
+    if (typeof draft.isRoundOff === 'boolean') {
+      setIsRoundOff(draft.isRoundOff)
+    }
     setHeldBills((prev) => prev.filter((d) => d.id !== draftId))
-    setAlertMsg({ type: 'success', text: 'Draft invoice restored to active billing table.' })
+    if (hasStockWarning) {
+      playBeep('error')
+      setAlertMsg({
+        type: 'error',
+        text: `Stock has changed for held bill items: ${warnings.join('; ')}. Quantities adjusted to available stock.`,
+      })
+    } else {
+      setAlertMsg({ type: 'success', text: 'Draft invoice restored and stock revalidated successfully.' })
+    }
   }
 
   // Primary Action: SAVE & PRINT BILL
@@ -949,7 +1498,7 @@ export default function BillingPage() {
     // 1. Validations
     if (validItems.length === 0) {
       playBeep('error')
-      setAlertMsg({ type: 'error', text: 'Please add at least one footwear item to the invoice before saving.' })
+      setAlertMsg({ type: 'error', text: 'Please add at least one valid footwear item to the invoice before saving.' })
       return
     }
 
@@ -963,14 +1512,30 @@ export default function BillingPage() {
       return
     }
 
-    for (const it of validItems) {
-      if (!it.size) {
-        setAlertMsg({ type: 'error', text: `Please select size for "${it.product_name}".` })
-        return
-      }
-      if (it.quantity <= 0) {
-        setAlertMsg({ type: 'error', text: `Invalid quantity for "${it.product_name}".` })
-        return
+    // Revalidate ALL items in cartItems
+    for (const grp of cartItems) {
+      if (!grp.product_id) continue
+      for (const sz of (grp.sizes || [])) {
+        if (!sz.size && sz.size !== 0) {
+          playBeep('error')
+          setAlertMsg({ type: 'error', text: `Please select shoe size for "${grp.product_name}".` })
+          return
+        }
+        const qty = Number(sz.quantity) || 0
+        if (qty <= 0) {
+          playBeep('error')
+          setAlertMsg({ type: 'error', text: `Invalid quantity for "${grp.product_name}" (Size ${sz.size}).` })
+          return
+        }
+        const availStock = getAvailableStockForProductSize(grp.product_id, sz.size)
+        if (availStock < 1 || qty > availStock) {
+          playBeep('error')
+          setAlertMsg({
+            type: 'error',
+            text: `Insufficient stock for "${grp.product_name}" (Size ${sz.size}). Available: ${availStock}, Requested: ${qty}. Please adjust quantity before checkout.`,
+          })
+          return
+        }
       }
     }
 
@@ -989,9 +1554,14 @@ export default function BillingPage() {
         description: descriptionNotes,
         payment_mode: paymentMode,
         subtotal: subtotal,
-        discount: 0,
+        discount: discountAmount,
+        discount_percent: discPctNum,
+        discount_amount: discountAmount,
+        delivery_charges: deliveryNum,
+        is_round_off: isRoundOff,
         tax: 0,
         round_off: roundOffAmount,
+        total_amount: grandTotal,
         amount_received: isAccount ? (receivedNum > 0 ? receivedNum : 0) : (receivedNum > 0 ? receivedNum : grandTotal),
         change_returned: !isAccount && isChangeReturn ? changeOrDueAmount : 0,
         items: validItems.map((item) => ({
@@ -1076,6 +1646,8 @@ export default function BillingPage() {
       sessionStorage.removeItem('swamidatt_billing_cart')
       setAmountReceived('')
       setDescriptionNotes('')
+      setDiscountPercent('0')
+      setDeliveryCharges('0')
       setAlertMsg({
         type: 'success',
         text: `Invoice ${savedBill.bill_no} successfully saved and printed! Stock updated.`,
@@ -1116,7 +1688,10 @@ export default function BillingPage() {
       billing_address: billingAddress,
       payment_mode: paymentMode,
       subtotal: subtotal,
-      discount: 0,
+      discount: discountAmount,
+      discount_percent: discPctNum,
+      discount_amount: discountAmount,
+      delivery_charges: deliveryNum,
       tax: 0,
       round_off: roundOffAmount,
       total_amount: grandTotal,
@@ -1384,19 +1959,20 @@ export default function BillingPage() {
             <thead>
               <tr>
                 <th style={{ width: '44px', textAlign: 'center' }}>Sr.</th>
-                <th style={{ minWidth: '240px' }}>Product / Footwear Model</th>
+                <th style={{ minWidth: '220px' }}>Product / Footwear Model</th>
                 <th style={{ width: '130px' }}>Barcode / SKU</th>
-                <th style={{ width: '110px', textAlign: 'center' }}>Total Pairs</th>
-                <th style={{ minWidth: '200px' }}>Sizes Breakdown</th>
-                <th style={{ width: '130px', textAlign: 'right' }}>Unit Rate (₹)</th>
-                <th style={{ width: '130px', textAlign: 'right' }}>Total Amount</th>
-                <th style={{ width: '110px', textAlign: 'center' }}>Actions</th>
+                <th style={{ width: '160px' }}>Shoe Size</th>
+                <th style={{ width: '120px', textAlign: 'center' }}>Available Stock</th>
+                <th style={{ width: '130px', textAlign: 'center' }}>Billing Qty</th>
+                <th style={{ width: '130px', textAlign: 'right' }}>Unit Selling Price</th>
+                <th style={{ width: '120px', textAlign: 'right' }}>Total Amount</th>
+                <th style={{ width: '80px', textAlign: 'center' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {cartItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="table-empty-row">
+                  <td colSpan={9} className="table-empty-row">
                     <div className="table-empty-msg">
                       <BarcodeNavIcon size={36} color="#94a3b8" />
                       <strong>No products added yet.</strong>
@@ -1409,8 +1985,20 @@ export default function BillingPage() {
               ) : (
                 cartItems.map((grp, grpIdx) => {
                   const isManual = !grp.product_id
-                  const groupPairs = (grp.sizes || []).reduce((acc, s) => acc + Number(s.quantity || 0), 0)
-                  const groupTotal = (grp.sizes || []).reduce((acc, s) => acc + Number(s.total || 0), 0)
+                  const groupPairs = (grp.sizes || []).reduce((acc, s) => {
+                    const hasValidSize = s.size !== '' && s.size !== null && s.size !== undefined
+                    const qty = Number(s.quantity) || 0
+                    const maxStk = Number(s.max_stock) || 0
+                    return (hasValidSize && qty > 0 && maxStk > 0 && qty <= maxStk) ? acc + qty : acc
+                  }, 0)
+                  const groupTotal = (grp.sizes || []).reduce((acc, s) => {
+                    const hasValidSize = s.size !== '' && s.size !== null && s.size !== undefined
+                    const qty = Number(s.quantity) || 0
+                    const maxStk = Number(s.max_stock) || 0
+                    const price = Number(s.selling_price) || 0
+                    return (hasValidSize && qty > 0 && maxStk > 0 && qty <= maxStk) ? acc + Math.round(qty * price * 100) / 100 : acc
+                  }, 0)
+                  const groupStock = (grp.available_sizes || []).reduce((acc, s) => acc + Number(s.stock_quantity ?? s.stock ?? 0), 0)
 
                   return (
                     <Fragment key={grp.group_id || grpIdx}>
@@ -1463,33 +2051,44 @@ export default function BillingPage() {
                           </span>
                         </td>
 
-                        {/* 4. Total Pairs in Group */}
+                        {/* 4. Shoe Size / Quick Add Size */}
+                        <td>
+                          {!isManual && (
+                            <select
+                              className="tbl-inline-add-size-select"
+                              value=""
+                              onChange={(e) => handleAddSizeVariant(grpIdx, e.target.value)}
+                              title="Add another size variant to this model"
+                            >
+                              <option value="">+ Add Size...</option>
+                              {(grp.available_sizes || []).map((s) => (
+                                <option key={s.size} value={s.size} disabled={s.stock_quantity <= 0}>
+                                  Size {s.size} ({s.stock_quantity > 0 ? `${s.stock_quantity} left` : 'Out of stock'})
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
+
+                        {/* 5. Available Stock (Total Model Stock) */}
+                        <td style={{ textAlign: 'center' }}>
+                          {!isManual && (
+                            <span className="tbl-group-stock-badge" title="Total stock available across all sizes">
+                              {groupStock} avail
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 6. Total Pairs in Group */}
                         <td style={{ textAlign: 'center' }}>
                           <span className="tbl-group-badge" style={{ background: '#dbeafe', color: '#1e40af', fontWeight: 800 }}>
                             {groupPairs} {groupPairs === 1 ? 'pair' : 'pairs'}
                           </span>
                         </td>
 
-                        {/* 5. Sizes Breakdown Badges */}
-                        <td>
-                          <div className="tbl-group-sizes-summary">
-                            {grp.sizes && grp.sizes.length > 0 ? (
-                              grp.sizes.map((sz) => (
-                                <span key={sz.size} className="tbl-size-pill">
-                                  Sz {sz.size}: <b>{sz.quantity}</b>
-                                </span>
-                              ))
-                            ) : (
-                              <span style={{ fontSize: '0.78rem', color: '#94a3b8', fontStyle: 'italic' }}>
-                                No sizes selected
-                              </span>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* 6. Wholesale Common Rate (Editable) */}
+                        {/* 7. Common Unit Selling Rate (₹) */}
                         <td style={{ textAlign: 'right' }}>
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end', width: '100%' }}>
                             <span style={{ fontSize: '0.78rem', color: '#64748b' }}>₹</span>
                             <input
                               type="number"
@@ -1500,129 +2099,152 @@ export default function BillingPage() {
                               value={grp.common_price}
                               onChange={(e) => handleUpdateGroupCommonPrice(grpIdx, e.target.value)}
                               disabled={isManual}
-                              title="Wholesale common rate for this footwear (updates all sizes)"
+                              title="Common unit selling rate (updates all sizes)"
                             />
                           </div>
                         </td>
 
-                        {/* 7. Group Final Amount */}
+                        {/* 8. Group Final Amount */}
                         <td style={{ textAlign: 'right' }}>
                           <span className="tbl-row-amount" style={{ color: '#0f172a', fontWeight: 800 }}>
                             ₹{groupTotal.toFixed(2)}
                           </span>
                         </td>
 
-                        {/* 8. Action Buttons */}
+                        {/* 9. Action Buttons */}
                         <td style={{ textAlign: 'center' }}>
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                            {!isManual && (
-                              <button
-                                type="button"
-                                className="tbl-btn-add-sizes"
-                                onClick={() => {
-                                  const prod = products.find((p) => p.id === grp.product_id) || grp
-                                  openMultiSizeModal(prod, grpIdx)
-                                }}
-                                title="Add or edit size quantities and wholesale rates"
-                              >
-                                + Sizes
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              className="tbl-remove-btn"
-                              onClick={() => handleRemoveGroup(grpIdx)}
-                              title="Remove entire footwear model"
-                            >
-                              <TrashIcon size={14} />
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            className="tbl-remove-btn"
+                            onClick={() => handleRemoveGroup(grpIdx)}
+                            title="Remove entire footwear model"
+                          >
+                            <TrashIcon size={14} />
+                          </button>
                         </td>
                       </tr>
 
                       {/* Sub-rows for each size (Rendered when expanded) */}
-                      {grp.is_expanded && !isManual && (grp.sizes || []).map((sz, szIdx) => (
-                        <tr key={`${grp.group_id}-sz-${sz.size}`} className="tbl-subrow">
-                          {/* Indent arrow */}
-                          <td className="tbl-subrow-indent">↳</td>
+                      {grp.is_expanded && !isManual && (grp.sizes || []).map((sz, szIdx) => {
+                        const isSizeUnassigned = !sz.size && sz.size !== 0
+                        return (
+                          <tr key={`${grp.group_id}-sz-${sz.size || szIdx}`} className="tbl-subrow">
+                            {/* 1. Indent arrow */}
+                            <td className="tbl-subrow-indent">↳</td>
 
-                          {/* Size variant label */}
-                          <td style={{ paddingLeft: '32px' }}>
-                            <span style={{ fontWeight: 600, color: '#334155', fontSize: '0.84rem' }}>
-                              Size {sz.size} Variant
-                            </span>
-                            {sz.max_stock !== undefined && (
-                              <span style={{ fontSize: '0.72rem', color: '#64748b', marginLeft: '8px' }}>
-                                (Avail: {sz.max_stock})
+                            {/* 2. Size variant label */}
+                            <td style={{ paddingLeft: '28px' }}>
+                              <span style={{ fontWeight: 600, color: '#334155', fontSize: '0.84rem' }}>
+                                {isSizeUnassigned ? 'Size Variant (Unselected)' : `Size ${sz.size} Variant`}
                               </span>
-                            )}
-                          </td>
+                            </td>
 
-                          {/* Barcode / SKU suffix */}
-                          <td>
-                            <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                              {grp.product_code || grp.barcode || '—'}-{sz.size}
-                            </span>
-                          </td>
+                            {/* 3. Barcode / SKU suffix */}
+                            <td>
+                              <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                                {grp.product_code || grp.barcode || 'FW'}-{isSizeUnassigned ? '?' : sz.size}
+                              </span>
+                            </td>
 
-                          {/* Quantity input */}
-                          <td style={{ textAlign: 'center' }}>
-                            <div className="tbl-qty-wrap" style={{ margin: '0 auto' }}>
-                              <input
-                                type="number"
-                                min="1"
-                                max={sz.max_stock > 0 ? sz.max_stock : 999}
-                                className="tbl-qty-input"
-                                value={sz.quantity}
-                                onChange={(e) => handleUpdateSizeQtyInGroup(grpIdx, szIdx, e.target.value)}
-                              />
-                            </div>
-                          </td>
+                            {/* 4. Inline Shoe Size Selector */}
+                            <td>
+                              <select
+                                className={`tbl-inline-size-select ${isSizeUnassigned ? 'select-unassigned' : ''}`}
+                                value={isSizeUnassigned ? '' : sz.size}
+                                onChange={(e) => handleInlineChangeSize(grpIdx, szIdx, e.target.value)}
+                                title="Select or change shoe size"
+                              >
+                                <option value="">-- Choose Size --</option>
+                                {(grp.available_sizes || []).map((s) => (
+                                  <option key={s.size} value={s.size} disabled={s.stock_quantity <= 0 && s.size !== sz.size}>
+                                    Size {s.size} ({s.stock_quantity > 0 ? `${s.stock_quantity} in stock` : 'Out of stock'})
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
 
-                          {/* Size badge */}
-                          <td style={{ textAlign: 'center' }}>
-                            <span className="stock-indicator-badge in-stock">
-                              Size {sz.size}
-                            </span>
-                          </td>
+                            {/* 5. Available Stock for this size */}
+                            <td style={{ textAlign: 'center' }}>
+                              {!isSizeUnassigned ? (
+                                <span className={`stock-indicator-badge ${sz.max_stock > 5 ? 'in-stock' : sz.max_stock > 0 ? 'low-stock' : 'out-of-stock'}`}>
+                                  {sz.max_stock > 0 ? `${sz.max_stock} in stock` : 'Out of stock'}
+                                </span>
+                              ) : (
+                                <span className="stock-indicator-badge select-hint">Choose size</span>
+                              )}
+                            </td>
 
-                          {/* Selling price for this size */}
-                          <td style={{ textAlign: 'right' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              <span style={{ fontSize: '0.78rem', color: '#64748b' }}>₹</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                className="tbl-cell-input"
-                                style={{ width: '80px', textAlign: 'right', fontWeight: 600 }}
-                                value={sz.selling_price}
-                                onChange={(e) => handleUpdateSizePriceInGroup(grpIdx, szIdx, e.target.value)}
-                                title={`Override rate for Size ${sz.size}`}
-                              />
-                            </div>
-                          </td>
+                            {/* 6. Quantity Controls (Stepper [-] [input] [+]) */}
+                            <td style={{ textAlign: 'center' }}>
+                              <div className="tbl-qty-control-inline">
+                                <button
+                                  type="button"
+                                  className="btn-qty-step"
+                                  onClick={() => handleStepSizeQty(grpIdx, szIdx, -1)}
+                                  disabled={sz.quantity <= 1}
+                                  title="Decrease quantity"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max={sz.max_stock > 0 ? sz.max_stock : 1}
+                                  className="tbl-qty-input-inline"
+                                  value={sz.quantity}
+                                  onChange={(e) => handleUpdateSizeQtyInGroup(grpIdx, szIdx, e.target.value)}
+                                  onBlur={() => handleBlurSizeQtyInGroup(grpIdx, szIdx)}
+                                />
+                                <button
+                                  type="button"
+                                  className="btn-qty-step"
+                                  onClick={() => handleStepSizeQty(grpIdx, szIdx, 1)}
+                                  disabled={sz.max_stock <= 0 || sz.quantity >= sz.max_stock}
+                                  title={sz.max_stock <= 0 ? 'Out of stock' : sz.quantity >= sz.max_stock ? `Max stock available is ${sz.max_stock}` : 'Increase quantity'}
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </td>
 
-                          {/* Subrow line total */}
-                          <td style={{ textAlign: 'right' }}>
-                            <span style={{ fontWeight: 700, color: '#334155', fontSize: '0.86rem' }}>
-                              ₹{Number(sz.total || 0).toFixed(2)}
-                            </span>
-                          </td>
+                            {/* 7. Unit Selling Price for this size */}
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end', width: '100%' }}>
+                                <span style={{ fontSize: '0.78rem', color: '#64748b' }}>₹</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  className="tbl-cell-input"
+                                  style={{ width: '80px', textAlign: 'right', fontWeight: 600 }}
+                                  value={sz.selling_price}
+                                  onChange={(e) => handleUpdateSizePriceInGroup(grpIdx, szIdx, e.target.value)}
+                                  title={`Selling rate for Size ${sz.size}`}
+                                />
+                              </div>
+                            </td>
 
-                          {/* Subrow remove button */}
-                          <td style={{ textAlign: 'center' }}>
-                            <button
-                              type="button"
-                              className="tbl-subrow-remove"
-                              onClick={() => handleRemoveSizeFromGroup(grpIdx, szIdx)}
-                              title={`Remove Size ${sz.size}`}
-                            >
-                              <CloseIcon size={12} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                            {/* 8. Subrow Line Total */}
+                            <td style={{ textAlign: 'right' }}>
+                              <span style={{ fontWeight: 700, color: '#334155', fontSize: '0.86rem' }}>
+                                ₹{Number(sz.total || 0).toFixed(2)}
+                              </span>
+                            </td>
+
+                            {/* 9. Subrow Remove Size Button */}
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="tbl-subrow-remove"
+                                onClick={() => handleRemoveSizeFromGroup(grpIdx, szIdx)}
+                                title={`Remove Size ${sz.size || ''} variant`}
+                              >
+                                <CloseIcon size={12} />
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </Fragment>
                   )
                 })
@@ -1681,8 +2303,59 @@ export default function BillingPage() {
           <div className="summary-rows-wrap">
             {/* Subtotal */}
             <div className="summary-calc-row">
-              <span>Subtotal:</span>
-              <strong>₹{subtotal.toFixed(2)}</strong>
+              <span className="summary-label">Subtotal:</span>
+              <strong className="summary-val">₹{subtotal.toFixed(2)}</strong>
+            </div>
+
+            {/* Percentage Discount Row */}
+            <div className="summary-calc-row summary-interactive-row">
+              <div className="summary-input-label-wrap">
+                <span className="summary-label">Discount (%):</span>
+                <div className="summary-input-badge-wrap">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="any"
+                    className="summary-field-input"
+                    value={discountPercent}
+                    onChange={handleDiscountPercentChange}
+                    onBlur={() => {
+                      if (discountPercent === '' || isNaN(parseFloat(discountPercent))) setDiscountPercent('0')
+                    }}
+                    placeholder="0"
+                  />
+                  <span className="summary-field-suffix">%</span>
+                </div>
+              </div>
+              <strong className={`summary-val ${discountAmount > 0 ? 'text-success' : ''}`}>
+                {discountAmount > 0 ? `- ₹${discountAmount.toFixed(2)}` : '₹0.00'}
+              </strong>
+            </div>
+
+            {/* Delivery / Transport Charges Row */}
+            <div className="summary-calc-row summary-interactive-row">
+              <div className="summary-input-label-wrap">
+                <span className="summary-label">Delivery / Transport Charges (₹):</span>
+                <div className="summary-input-badge-wrap">
+                  <span className="summary-field-prefix">₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    className="summary-field-input"
+                    value={deliveryCharges}
+                    onChange={handleDeliveryChargesChange}
+                    onBlur={() => {
+                      if (deliveryCharges === '' || isNaN(parseFloat(deliveryCharges))) setDeliveryCharges('0')
+                    }}
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+              <strong className="summary-val">
+                {deliveryNum > 0 ? `+ ₹${deliveryNum.toFixed(2)}` : '₹0.00'}
+              </strong>
             </div>
 
             {/* Round Off Option */}
@@ -1703,7 +2376,7 @@ export default function BillingPage() {
             {/* Grand Total Box */}
             <div className="grand-total-highlight-box">
               <span className="gt-box-label">Grand Total:</span>
-              <span className="gt-box-value">₹{grandTotal.toLocaleString('en-IN')}</span>
+              <span className="gt-box-value">₹{Number(grandTotal).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
 
             {/* Amount Received & Balance Due */}

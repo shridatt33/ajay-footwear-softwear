@@ -4871,45 +4871,69 @@ textarea.form-control {
   margin-top: 2px;
 }
 
+.inv-heading-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #2563eb;
+  text-align: center;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 6px 0 14px;
+}
+
+.inv-size-cell {
+  padding: 8px 10px !important;
+}
+
+.inv-size-pill {
+  display: inline-block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 .inv-summary-wrapper {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 32px;
+  gap: 24px;
   margin-top: 10px;
   margin-bottom: 20px;
 }
 
-.inv-summary-notes {
-  flex: 1;
-  padding: 12px 16px;
-  background: #fafafa;
+.inv-note-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: 6px;
-  border: 1px solid #f1f5f9;
+  padding: 10px 14px;
+  font-size: 0.82rem;
 }
 
-.inv-terms-title {
-  font-size: 0.78rem;
+.inv-note-title {
   font-weight: 700;
   color: #475569;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
 }
 
-.inv-terms-list {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 0.75rem;
+.inv-note-text {
   color: #64748b;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .inv-calculation-box {
-  width: 260px;
+  width: 270px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
   padding: 12px 16px;
   background: #f8fafc;
   border-radius: 6px;
@@ -4924,6 +4948,10 @@ textarea.form-control {
   color: #475569;
 }
 
+.inv-calc-row.small-calc {
+  font-size: 0.8rem;
+}
+
 .inv-calc-row.grand-total-row {
   font-size: 1.2rem;
   font-weight: 800;
@@ -4931,21 +4959,145 @@ textarea.form-control {
   padding-top: 4px;
 }
 
-.inv-barcode-footer {
+.inv-bottom-signature-row {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  margin-top: 20px;
-  padding-top: 16px;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-top: 18px;
+  padding-top: 14px;
   border-top: 1px dashed #cbd5e1;
 }
 
-.inv-footer-thanks {
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: #2563eb;
-  margin-top: 8px;
+.inv-footer-barcode-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.inv-authorized-signature {
+  text-align: center;
+  width: 170px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #64748b;
+  border-top: 1px solid #94a3b8;
+  padding-top: 6px;
+}
+
+/* =========================================================
+   80MM THERMAL RECEIPT STYLES
+   ========================================================= */
+.thermal-receipt-container {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.thermal-receipt-sheet {
+  width: 320px;
+  max-width: 100%;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  padding: 18px 14px;
+  font-family: 'Courier New', Courier, monospace, 'Segoe UI', sans-serif;
+  font-size: 11px;
+  color: #000000;
+  line-height: 1.35;
+}
+
+.thermal-center {
+  text-align: center;
+}
+
+.thermal-bold {
+  font-weight: bold;
+}
+
+.thermal-shop-name {
+  font-size: 15px;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.thermal-tagline {
+  font-size: 10px;
+  color: #333333;
+  margin-bottom: 3px;
+}
+
+.thermal-sub {
+  font-size: 9.5px;
+  margin-bottom: 2px;
+}
+
+.thermal-divider-double {
+  border-top: 2px solid #000000;
+  margin: 6px 0;
+}
+
+.thermal-divider-dashed {
+  border-top: 1px dashed #000000;
+  margin: 6px 0;
+}
+
+.thermal-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2px;
+  font-size: 11px;
+}
+
+.thermal-grand-total {
+  font-size: 13.5px;
+  font-weight: bold;
+  margin: 4px 0;
+}
+
+.thermal-items-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4px 0;
+}
+
+.thermal-items-table th {
+  text-align: left;
+  border-bottom: 1px dashed #000000;
+  padding: 3px 0;
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.thermal-items-table td {
+  padding: 3px 0;
+  font-size: 11px;
+  vertical-align: top;
+}
+
+.thermal-item-name {
+  font-weight: bold;
+  font-size: 11px;
+}
+
+.thermal-sizes-breakdown {
+  font-size: 9.5px;
+  color: #333333;
+  margin-top: 1px;
+}
+
+.thermal-barcode-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0 4px;
+}
+
+.thermal-footer {
+  text-align: center;
+  font-size: 9.5px;
+  margin-top: 6px;
 }
 
 /* =========================================================

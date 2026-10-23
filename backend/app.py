@@ -279,6 +279,9 @@ def ensure_database_schema():
             cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS description TEXT;")
             cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS round_off NUMERIC(10,2) DEFAULT 0;")
             cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS subtotal NUMERIC(10,2) DEFAULT 0;")
+            cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS discount_percent NUMERIC(5,2) DEFAULT 0;")
+            cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0;")
+            cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS delivery_charges NUMERIC(10,2) DEFAULT 0;")
 
             cur.execute(
                 """
@@ -2701,9 +2704,13 @@ def get_product(product_id):
 @app.route("/api/products/barcode/<barcode>", methods=["GET"])
 def get_product_by_barcode(barcode):
     try:
+        import re
         cleaned_barcode = barcode.strip()
+        encoded_size = None
+
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # 1. Try direct exact match
                 cur.execute(
                     """
                     SELECT id FROM products 
@@ -2714,10 +2721,30 @@ def get_product_by_barcode(barcode):
                     (cleaned_barcode, cleaned_barcode, cleaned_barcode, cleaned_barcode),
                 )
                 row = cur.fetchone()
+
+                # 2. If not found, check if barcode encodes a size suffix (e.g. FW-0033-8, 890398596302-8, FW-0033/8)
+                if not row:
+                    m = re.match(r"^(.+?)[-_/\s]+([0-9]{1,2})$", cleaned_barcode)
+                    if m:
+                        base_code = m.group(1).strip()
+                        encoded_size = int(m.group(2))
+                        cur.execute(
+                            """
+                            SELECT id FROM products 
+                            WHERE (barcode = %s OR product_code = %s OR LOWER(barcode) = LOWER(%s) OR LOWER(product_code) = LOWER(%s))
+                              AND status = 'active'
+                            LIMIT 1;
+                            """,
+                            (base_code, base_code, base_code, base_code),
+                        )
+                        row = cur.fetchone()
+
                 if not row:
                     return jsonify({"message": "Product not found for this barcode."}), 404
 
                 product = fetch_product_with_sizes(cur, row[0])
+                if product and encoded_size is not None:
+                    product["scanned_size"] = encoded_size
 
         return jsonify({"product": product})
     except Exception as e:
@@ -3020,12 +3047,14 @@ def billing_checkout():
         terms_conditions = (payload.get("terms_conditions") or "").strip()
         description = (payload.get("description") or "").strip()
         payment_mode = (payload.get("payment_mode") or "Cash").strip()
-        discount = float(payload.get("discount") or 0.0)
-        tax = float(payload.get("tax") or 0.0)
+        discount = max(0.0, float(payload.get("discount") or 0.0))
+        discount_percent = max(0.0, min(100.0, float(payload.get("discount_percent") or 0.0)))
+        delivery_charges = max(0.0, float(payload.get("delivery_charges") or 0.0))
+        tax = max(0.0, float(payload.get("tax") or 0.0))
         round_off = float(payload.get("round_off") or 0.0)
-        subtotal_in = float(payload.get("subtotal") or 0.0)
-        amount_received = float(payload.get("amount_received") or 0.0)
-        change_returned = float(payload.get("change_returned") or 0.0)
+        subtotal_in = max(0.0, float(payload.get("subtotal") or 0.0))
+        amount_received = max(0.0, float(payload.get("amount_received") or 0.0))
+        change_returned = max(0.0, float(payload.get("change_returned") or 0.0))
 
         if not items or not isinstance(items, list):
             return jsonify({"message": "Bill must contain at least one item."}), 400
@@ -3078,21 +3107,23 @@ def billing_checkout():
                 calc_subtotal = 0.0
                 processed_items = []
 
-                for item in items:
-                    product_id = item.get("product_id")
-                    size = item.get("size")
-                    qty = int(item.get("quantity", 1))
-                    user_price = item.get("selling_price")
-                    item_barcode = (item.get("barcode") or "").strip()
-                    disc_pct = float(item.get("discount_percent") or 0.0)
-                    disc_amt = float(item.get("discount_amount") or 0.0)
-                    tax_pct = float(item.get("tax_percent") or 0.0)
-                    tax_amt = float(item.get("tax_amount") or 0.0)
-
-                    if not product_id or size is None or qty <= 0:
+                # Phase 1: Aggregate requested quantities per (product_id, size)
+                item_demand = {}
+                for it in items:
+                    pid = it.get("product_id")
+                    sz = it.get("size")
+                    try:
+                        q = int(it.get("quantity") or 0)
+                    except (ValueError, TypeError):
+                        q = 0
+                    if not pid or sz is None or q <= 0:
                         return jsonify({"message": "Invalid product, size, or quantity in bill item."}), 400
+                    key = (int(pid), int(sz))
+                    item_demand[key] = item_demand.get(key, 0) + q
 
-                    # Lock size stock for update
+                # Phase 2: Lock stock rows and validate available quantities for ALL items
+                stock_info = {}
+                for (pid, sz), total_req in item_demand.items():
                     cur.execute(
                         """
                         SELECT ps.stock_quantity, p.product_name, p.selling_price, p.barcode
@@ -3101,39 +3132,63 @@ def billing_checkout():
                         WHERE ps.product_id = %s AND ps.size = %s AND p.status = 'active'
                         FOR UPDATE
                         """,
-                        (product_id, size),
+                        (pid, sz),
                     )
                     stock_row = cur.fetchone()
                     if not stock_row:
-                        return jsonify({"message": f"Size {size} not found for product ID {product_id}."}), 404
+                        return jsonify({"message": f"Size {sz} not found for product ID {pid}."}), 404
 
                     current_stock, p_name, db_price, db_barcode = stock_row
-                    if current_stock < qty:
+                    if current_stock < total_req:
                         return jsonify({
-                            "message": f"Insufficient stock for {p_name} (Size {size}). Available: {current_stock}, Requested: {qty}"
+                            "message": f"Insufficient stock for {p_name} (Size {sz}). Available: {current_stock}, Requested: {total_req}"
                         }), 400
 
-                    price_to_use = float(user_price) if user_price is not None and float(user_price) > 0 else float(db_price)
-                    item_barcode_to_use = item_barcode if item_barcode else (db_barcode or "")
+                    stock_info[(pid, sz)] = {
+                        "current_stock": current_stock,
+                        "product_name": p_name,
+                        "db_price": float(db_price),
+                        "db_barcode": db_barcode or "",
+                    }
 
-                    line_base = price_to_use * qty
-                    calc_subtotal += line_base
-                    line_final = max(0.0, line_base - disc_amt + tax_amt)
-
-                    # Deduct stock ONLY for this size
+                # Phase 3: ALL items passed validation! Now deduct stock and build line items
+                for (pid, sz), total_req in item_demand.items():
                     cur.execute(
                         """
                         UPDATE product_sizes
                         SET stock_quantity = stock_quantity - %s, updated_at = NOW()
                         WHERE product_id = %s AND size = %s
                         """,
-                        (qty, product_id, size),
+                        (total_req, pid, sz),
                     )
 
+                for item in items:
+                    pid = int(item.get("product_id"))
+                    sz = int(item.get("size"))
+                    qty = int(item.get("quantity") or 1)
+                    user_price = item.get("selling_price")
+                    item_barcode = (item.get("barcode") or "").strip()
+                    disc_pct = float(item.get("discount_percent") or 0.0)
+                    disc_amt = float(item.get("discount_amount") or 0.0)
+                    tax_pct = float(item.get("tax_percent") or 0.0)
+                    tax_amt = float(item.get("tax_amount") or 0.0)
+
+                    s_meta = stock_info[(pid, sz)]
+                    p_name = s_meta["product_name"]
+                    db_price = s_meta["db_price"]
+                    db_barcode = s_meta["db_barcode"]
+
+                    price_to_use = float(user_price) if user_price is not None and float(user_price) > 0 else db_price
+                    item_barcode_to_use = item_barcode if item_barcode else db_barcode
+
+                    line_base = price_to_use * qty
+                    calc_subtotal += line_base
+                    line_final = max(0.0, line_base - disc_amt + tax_amt)
+
                     processed_items.append({
-                        "product_id": product_id,
+                        "product_id": pid,
                         "product_name": p_name,
-                        "size": size,
+                        "size": sz,
                         "quantity": qty,
                         "selling_price": price_to_use,
                         "barcode": item_barcode_to_use,
@@ -3144,8 +3199,26 @@ def billing_checkout():
                         "total_price": line_final,
                     })
 
-                subtotal = subtotal_in if subtotal_in > 0 else calc_subtotal
-                grand_total = max(0.0, round(subtotal - discount + tax + round_off, 2))
+                subtotal = round(calc_subtotal if calc_subtotal > 0 else subtotal_in, 2)
+                if discount_percent > 0:
+                    discount_amount = round(subtotal * (discount_percent / 100.0), 2)
+                elif discount > 0:
+                    discount_amount = min(subtotal, round(discount, 2))
+                    discount_percent = round((discount_amount / subtotal) * 100.0, 2) if subtotal > 0 else 0.0
+                else:
+                    discount_amount = 0.0
+                    discount_percent = 0.0
+
+                delivery_charges = round(delivery_charges, 2)
+                total_before_round_off = round(subtotal - discount_amount + delivery_charges + tax, 2)
+
+                is_round_off = bool(payload.get("is_round_off", True)) if "is_round_off" in payload else (abs(round_off) > 0.0001 or round_off != 0.0)
+                if is_round_off:
+                    grand_total = max(0.0, float(round(total_before_round_off)))
+                    round_off = round(grand_total - total_before_round_off, 2)
+                else:
+                    grand_total = max(0.0, total_before_round_off)
+                    round_off = 0.0
 
                 is_account_sale = payment_mode in ["Add in Account", "Credit"]
 
@@ -3166,18 +3239,21 @@ def billing_checkout():
                     INSERT INTO bills (
                         bill_no, customer_id, customer_name, customer_phone, billing_address,
                         state_of_supply, terms_conditions, description, payment_mode, subtotal,
-                        discount, tax, round_off, total_amount, amount_received, change_returned, status,
+                        discount, discount_percent, discount_amount, delivery_charges, tax, round_off,
+                        total_amount, amount_received, change_returned, status,
                         user_id, shop_name
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, bill_no, customer_name, customer_phone, payment_mode, total_amount, status, created_at,
                               discount, tax, amount_received, change_returned, pdf_path, billing_address, state_of_supply,
-                              terms_conditions, description, round_off, subtotal, user_id, shop_name
+                              terms_conditions, description, round_off, subtotal, user_id, shop_name,
+                              discount_percent, discount_amount, delivery_charges
                     """,
                     (
                         bill_no, customer_id if customer_id else None, customer_name, customer_phone,
                         billing_address, state_of_supply, terms_conditions, description, payment_mode,
-                        subtotal, discount, tax, round_off, grand_total, amount_received, change_returned, bill_status,
+                        subtotal, discount_amount, discount_percent, discount_amount, delivery_charges, tax, round_off,
+                        grand_total, amount_received, change_returned, bill_status,
                         auth_user_id, effective_shop_name
                     ),
                 )
@@ -3249,6 +3325,9 @@ def billing_checkout():
                 "subtotal": float(bill_row[18] or subtotal),
                 "user_id": bill_row[19],
                 "shop_name": bill_row[20] or effective_shop_name,
+                "discount_percent": float(bill_row[21] or discount_percent),
+                "discount_amount": float(bill_row[22] or discount_amount),
+                "delivery_charges": float(bill_row[23] or delivery_charges),
                 "items": processed_items,
             }
         }), 201
@@ -3336,7 +3415,12 @@ def get_bills():
                            b.payment_mode, b.total_amount, b.status, b.created_at,
                            COALESCE(COUNT(bi.id), 0) AS total_items,
                            COALESCE(b.discount, 0), COALESCE(b.tax, 0),
-                           COALESCE(b.pdf_path, '')
+                           COALESCE(b.pdf_path, ''),
+                           COALESCE(b.subtotal, b.total_amount),
+                           COALESCE(b.discount_percent, 0),
+                           COALESCE(b.discount_amount, b.discount, 0),
+                           COALESCE(b.delivery_charges, 0),
+                           COALESCE(b.round_off, 0)
                     FROM bills b
                     LEFT JOIN bill_items bi ON bi.bill_id = b.id
                     WHERE 1=1
@@ -3351,7 +3435,7 @@ def get_bills():
                     params.append(int(customer_id))
 
                 query += """
-                    GROUP BY b.id, b.bill_no, b.customer_name, b.customer_phone, b.payment_mode, b.total_amount, b.status, b.created_at, b.discount, b.tax, b.pdf_path
+                    GROUP BY b.id, b.bill_no, b.customer_name, b.customer_phone, b.payment_mode, b.total_amount, b.status, b.created_at, b.discount, b.tax, b.pdf_path, b.subtotal, b.discount_percent, b.discount_amount, b.delivery_charges, b.round_off
                     ORDER BY b.created_at DESC
                     LIMIT %s
                 """
@@ -3374,6 +3458,11 @@ def get_bills():
                 "discount": float(r[9]),
                 "tax": float(r[10]),
                 "pdf_path": r[11],
+                "subtotal": float(r[12]),
+                "discount_percent": float(r[13]),
+                "discount_amount": float(r[14]),
+                "delivery_charges": float(r[15]),
+                "round_off": float(r[16]),
             }
             for r in rows
         ]
@@ -3397,7 +3486,10 @@ def get_bill_detail(bill_id):
                            COALESCE(b.pdf_path, ''),
                            COALESCE(b.billing_address, ''),
                            COALESCE(b.subtotal, b.total_amount),
-                           COALESCE(b.round_off, 0)
+                           COALESCE(b.round_off, 0),
+                           COALESCE(b.discount_percent, 0),
+                           COALESCE(b.discount_amount, b.discount, 0),
+                           COALESCE(b.delivery_charges, 0)
                     FROM bills b
                     WHERE b.id = %s
                     """,
@@ -3466,6 +3558,9 @@ def get_bill_detail(bill_id):
                 "billing_address": bill_row[14],
                 "subtotal": float(bill_row[15]),
                 "round_off": float(bill_row[16]),
+                "discount_percent": float(bill_row[17]),
+                "discount_amount": float(bill_row[18]),
+                "delivery_charges": float(bill_row[19]),
                 "items": items,
             }
         })
