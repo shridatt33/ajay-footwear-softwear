@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf'
-import { SHOP_INFO } from '../config'
-import { groupInvoiceItems, extractInvoiceTotals, formatCurrency } from './invoiceUtils'
+import { SHOP_INFO } from '../config.js'
+import { groupInvoiceItems, extractInvoiceTotals, formatCurrency } from './invoiceUtils.js'
 
 export function generateInvoicePDFData(bill) {
   if (!bill) return null
@@ -280,7 +280,7 @@ export function generateInvoicePDFData(bill) {
     calcY += 5
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(71, 85, 105)
-    doc.text('Delivery / Transport:', labelX, calcY)
+    doc.text('Delivery / Transport Charges:', labelX, calcY)
     doc.setFont('helvetica', 'bold')
     doc.setTextColor(15, 23, 42)
     doc.text(`+ ${formatCurrency(totals.deliveryCharges)}`, valueX, calcY, { align: 'right' })

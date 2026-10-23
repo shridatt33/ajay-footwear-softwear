@@ -321,7 +321,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
 
   <div class="row"><span>Subtotal:</span><span>${formatCurrency(totals.subtotal)}</span></div>
   ${totals.discountAmount > 0 ? `<div class="row"><span>Discount${totals.discountPercent > 0 ? ` (${totals.discountPercent}%)` : ""}:</span><span>- ${formatCurrency(totals.discountAmount)}</span></div>` : ""}
-  ${totals.deliveryCharges > 0 ? `<div class="row"><span>Delivery / Transport:</span><span>+ ${formatCurrency(totals.deliveryCharges)}</span></div>` : ""}
+  ${totals.deliveryCharges > 0 ? `<div class="row"><span>Delivery / Transport Charges:</span><span>+ ${formatCurrency(totals.deliveryCharges)}</span></div>` : ""}
   ${totals.tax > 0 ? `<div class="row"><span>Tax/GST:</span><span>+ ${formatCurrency(totals.tax)}</span></div>` : ""}
   ${totals.roundOff !== 0 ? `<div class="row"><span>Round Off:</span><span>${totals.roundOff > 0 ? "+" : ""}${formatCurrency(totals.roundOff)}</span></div>` : ""}
 
@@ -601,7 +601,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
     <div class="calc-card">
       <div class="calc-row"><span>Subtotal:</span><span>${formatCurrency(totals.subtotal)}</span></div>
       ${totals.discountAmount > 0 ? `<div class="calc-row" style="color: #15803d;"><span>Discount${totals.discountPercent > 0 ? ` (${totals.discountPercent}%)` : ""}:</span><span>- ${formatCurrency(totals.discountAmount)}</span></div>` : ""}
-      ${totals.deliveryCharges > 0 ? `<div class="calc-row"><span>Delivery / Transport:</span><span>+ ${formatCurrency(totals.deliveryCharges)}</span></div>` : ""}
+      ${totals.deliveryCharges > 0 ? `<div class="calc-row"><span>Delivery / Transport Charges:</span><span>+ ${formatCurrency(totals.deliveryCharges)}</span></div>` : ""}
       ${totals.tax > 0 ? `<div class="calc-row"><span>Tax/GST:</span><span>+ ${formatCurrency(totals.tax)}</span></div>` : ""}
       ${totals.roundOff !== 0 ? `<div class="calc-row"><span>Round Off:</span><span>${totals.roundOff > 0 ? "+" : ""}${formatCurrency(totals.roundOff)}</span></div>` : ""}
       <div class="calc-row grand-total">
