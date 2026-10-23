@@ -1,5 +1,5 @@
 /**
- * Invoice utility helpers for SWAMIDATT FOOTWEAR ERP
+ * Invoice utility helpers for SWAMIDATT ENTERPRISES ERP
  * Centralizes grouping of identical footwear models, size breakdown strings,
  * currency formatting, and consistent totals calculations.
  */
@@ -164,3 +164,51 @@ export function extractInvoiceTotals(bill) {
     isAccount,
   }
 }
+
+/**
+ * Safely sanitizes an invoice number to be used as a valid filesystem filename.
+ * Strips or replaces characters that are illegal in Windows/Unix filenames: \ / : * ? " < > |
+ * Also handles empty or whitespace-only invoice numbers with a safe fallback.
+ */
+export function sanitizeInvoiceFilename(billNo, fallback = 'Invoice') {
+  if (!billNo || typeof billNo !== 'string') return fallback
+  const cleaned = billNo
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/[-_\s]+/g, (match) => (match.includes('-') ? '-' : match.includes('_') ? '_' : ' '))
+    .replace(/^[-_\s]+|[-_\s]+$/g, '')
+    .trim()
+  return cleaned || fallback
+}
+
+/**
+ * Triggers window.print() while temporarily setting document.title to the sanitized invoice number.
+ * When the browser's Print dialog opens and the user chooses "Save as PDF",
+ * the browser automatically suggests the document.title as the filename (e.g. "SW-1043.pdf").
+ * Restores the original document.title immediately after printing finishes or cancels.
+ */
+export function printInvoiceDocument(billNo) {
+  const originalTitle = document.title
+  const invoiceFilename = sanitizeInvoiceFilename(billNo, 'Invoice')
+
+  document.title = invoiceFilename
+
+  let restored = false
+  const restoreTitle = () => {
+    if (!restored) {
+      restored = true
+      document.title = originalTitle
+      window.removeEventListener('afterprint', restoreTitle)
+    }
+  }
+
+  window.addEventListener('afterprint', restoreTitle)
+
+  try {
+    window.print()
+  } finally {
+    // Standard browsers execute window.print() synchronously.
+    // Ensure the original title is restored via both setTimeout and afterprint.
+    setTimeout(restoreTitle, 500)
+  }
+}
+

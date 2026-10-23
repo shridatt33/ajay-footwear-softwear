@@ -1,6 +1,6 @@
-# SWAMIDATT FOOTWEAR ERP & POS — Production Deployment Guide
+# SWAMIDATT ENTERPRISES ERP & POS — Production Deployment Guide
 
-This guide details the complete, step-by-step production deployment for the **SWAMIDATT FOOTWEAR ERP POS Billing System** on [Render](https://render.com).
+This guide details the complete, step-by-step production deployment for the **SWAMIDATT ENTERPRISES ERP POS Billing System** on [Render](https://render.com).
 
 ---
 

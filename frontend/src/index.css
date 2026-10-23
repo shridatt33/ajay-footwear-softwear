@@ -98,6 +98,10 @@ body.modal-open {
 
 /* Print Styles */
 @media print {
+  @page {
+    size: auto;
+    margin: 5mm;
+  }
   html,
   body {
     background: #ffffff !important;
@@ -105,6 +109,12 @@ body.modal-open {
     height: auto !important;
     min-height: auto !important;
     overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  body.invoice-modal-open > #root,
+  body.invoice-modal-open #root {
+    display: none !important;
   }
   #root,
   .app-shell,

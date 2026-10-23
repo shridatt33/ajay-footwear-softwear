@@ -43,7 +43,7 @@ export default function LandingPage() {
           <a href="#home" className="landing-brand" onClick={(e) => scrollToSection(e, 'home')}>
             <img
               src="/Swamidatt_Agency.png"
-              alt="SWAMIDATT FOOTWEAR"
+              alt="SWAMIDATT ENTERPRISES"
               className="landing-brand-logo"
               onError={(e) => {
                 e.currentTarget.style.display = 'none'
@@ -177,7 +177,7 @@ export default function LandingPage() {
             <div className="hero-image-frame">
               <img
                 src="/footwear_hero.jpg"
-                alt="SWAMIDATT FOOTWEAR Collection Showcase"
+                alt="SWAMIDATT ENTERPRISES Collection Showcase"
                 loading="eager"
               />
             </div>
@@ -450,7 +450,7 @@ export default function LandingPage() {
                 <ShieldCheckIcon size={14} />
                 <span>Enterprise POS &amp; ERP System</span>
               </div>
-              <h3>SWAMIDATT FOOTWEAR Retail Management &amp; POS</h3>
+              <h3>SWAMIDATT ENTERPRISES Retail Management &amp; POS</h3>
               <p>
                 Behind our shop stands a tailored management and point-of-sale software designed specifically for footwear retail. From barcode scanning and size stock control to instant tax invoices and revenue reports, the platform powers our entire store lifecycle.
               </p>
@@ -651,7 +651,7 @@ export default function LandingPage() {
               <div className="footer-logo-row">
                 <img
                   src="/Swamidatt_Agency.png"
-                  alt="SWAMIDATT FOOTWEAR Logo"
+                  alt="SWAMIDATT ENTERPRISES Logo"
                   onError={(e) => {
                     e.currentTarget.style.display = 'none'
                   }}

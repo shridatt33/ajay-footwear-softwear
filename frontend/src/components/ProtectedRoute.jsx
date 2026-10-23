@@ -32,7 +32,7 @@ export default function ProtectedRoute() {
           <ShoeLogo />
           <div style={{ textAlign: 'center' }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: '#0f172a', margin: 0 }}>
-              SWAMIDATT FOOTWEAR
+              SWAMIDATT ENTERPRISES
             </h3>
             <p style={{ fontSize: '0.82rem', color: '#64748b', margin: '4px 0 0 0' }}>
               Verifying secure session...

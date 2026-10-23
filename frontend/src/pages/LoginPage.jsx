@@ -29,6 +29,24 @@ export default function LoginPage() {
     }
   }, [isAuthenticated, isLoading, navigate])
 
+  // Support direct secure token authentication via query parameter
+  useEffect(() => {
+    try {
+      const hashParts = window.location.hash.split('?')
+      const searchParts = window.location.search
+      const queryStr = hashParts[1] || (searchParts ? searchParts.slice(1) : '')
+      if (queryStr) {
+        const params = new URLSearchParams(queryStr)
+        const queryToken = params.get('token')
+        if (queryToken) {
+          sessionStorage.setItem('swamidatt_erp_token', queryToken)
+          window.location.hash = '#/sales'
+          window.location.reload()
+        }
+      }
+    } catch (_) {}
+  }, [])
+
   const validateForm = () => {
     const newErrors = { username: '', password: '' }
     let isValid = true
@@ -118,7 +136,7 @@ export default function LoginPage() {
               <path d="m14 12.5 3-3 4 4" />
             </svg>
           </div>
-          <h1 className="login-brand-name">SWAMIDATT FOOTWEAR</h1>
+          <h1 className="login-brand-name">SWAMIDATT ENTERPRISES</h1>
           <span className="login-brand-tagline">Retail Management &amp; POS</span>
         </div>
 
@@ -237,7 +255,7 @@ export default function LoginPage() {
       </div>
 
       <div className="login-outer-meta">
-        SWAMIDATT FOOTWEAR ERP &bull; Desktop Terminal v1.0.0
+        SWAMIDATT ENTERPRISES ERP &bull; Desktop Terminal v1.0.0
       </div>
     </div>
   )

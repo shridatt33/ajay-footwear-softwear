@@ -1,6 +1,9 @@
-export const API_BASE_URL = 'https://swamidatt-footwear-api.onrender.com/api'
+export const API_BASE_URL =
+  typeof window !== 'undefined' && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
+    ? 'http://127.0.0.1:5000/api'
+    : 'https://swamidatt-footwear-api.onrender.com/api'
 export const SHOP_INFO = {
-  name: 'SWAMIDATT FOOTWEAR',
+  name: 'SWAMIDATT ENTERPRISES',
   tagline: 'Retail Footwear & Accessories',
   address: ' Wadgaon Aanad Alefhata Tal junner Dist pune',
   phone: '+91 7020466300',

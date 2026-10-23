@@ -61,7 +61,7 @@ def run_tests():
             api_request("DELETE", f"/api/developer/users/{u['id']}", token=dev_token)
 
     status, create_res = api_request("POST", "/api/developer/users", {
-        "shop_name": "SWAMIDATT FOOTWEAR - Pune West Branch",
+        "shop_name": "SWAMIDATT ENTERPRISES - Pune West Branch",
         "username": test_username,
         "password": "InitialPassword123!",
         "full_name": "Santosh Kulkarni",
@@ -78,7 +78,7 @@ def run_tests():
     # 5. Edit Shop Details
     print("\n--- TEST 5: Edit Shop Details ---")
     status, edit_res = api_request("PUT", f"/api/developer/users/{test_user_id}", {
-        "shop_name": "SWAMIDATT FOOTWEAR - Pune Flagship Outlet",
+        "shop_name": "SWAMIDATT ENTERPRISES - Pune Flagship Outlet",
         "full_name": "Santosh V. Kulkarni",
         "phone": "+91 9822099999",
         "email": "pune.flagship@swamidatt.com",
@@ -108,7 +108,7 @@ def run_tests():
     shop_token = shop_login_res["token"]
     shop_user = shop_login_res["user"]
     assert shop_user["billing_status"] == "active"
-    assert shop_user["shop_name"] == "SWAMIDATT FOOTWEAR - Pune Flagship Outlet"
+    assert shop_user["shop_name"] == "SWAMIDATT ENTERPRISES - Pune Flagship Outlet"
     print(f"[OK] Shop user logged in successfully. Shop Name: {shop_user['shop_name']}, Billing Status: {shop_user['billing_status']}")
 
     # 7. Stop Billing (Suspension)

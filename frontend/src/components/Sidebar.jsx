@@ -51,7 +51,7 @@ export default function Sidebar({ collapsed, setCollapsed }) {
         {!collapsed && (
           <div className="brand-text">
             <span className="brand-name">SWAMIDATT</span>
-            <span className="brand-role">Footwear ERP &amp; POS</span>
+            <span className="brand-role">Enterprises ERP &amp; POS</span>
           </div>
         )}
       </div>

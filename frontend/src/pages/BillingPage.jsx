@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import InvoiceModal from '../components/InvoiceModal'
 import BarcodeDisplay from '../components/BarcodeDisplay'
 import { generateInvoicePDFData } from '../utils/pdfGenerator'
+import { printInvoiceDocument } from '../utils/invoiceUtils'
 import './BillingPage.css'
 import {
   BillIcon,
@@ -1631,10 +1632,10 @@ export default function BillingPage() {
         if (window.electronAPI && typeof window.electronAPI.printInvoice === 'function') {
           await window.electronAPI.printInvoice({ bill: savedBill, printType: 'a4' })
         } else {
-          // In web browser, allow modal DOM to mount before triggering window.print
+          // In web browser, allow modal DOM to mount before triggering print with invoice filename
           setTimeout(() => {
-            window.print()
-          }, 300)
+            printInvoiceDocument(savedBill?.bill_no)
+          }, 350)
         }
       } catch (printErr) {
         console.warn('Print trigger note:', printErr)

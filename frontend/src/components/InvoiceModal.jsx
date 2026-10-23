@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { API_BASE_URL, SHOP_INFO } from '../config'
 import BarcodeDisplay from './BarcodeDisplay'
 import { PrintIcon, CloseIcon, DownloadIcon } from './Icons'
 import { generateInvoicePDFData, generateInvoicePDF } from '../utils/pdfGenerator'
-import { groupInvoiceItems, extractInvoiceTotals, formatCurrency } from '../utils/invoiceUtils'
+import {
+  groupInvoiceItems,
+  extractInvoiceTotals,
+  formatCurrency,
+  sanitizeInvoiceFilename,
+  printInvoiceDocument,
+} from '../utils/invoiceUtils'
 
 export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePrint }) {
   if (!bill) return null
@@ -15,10 +22,39 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
 
   useEffect(() => {
     document.body.classList.add('invoice-modal-open')
+    const originalTitle = document.title
+
+    const handleBeforePrint = () => {
+      if (currentBill?.bill_no) {
+        document.title = sanitizeInvoiceFilename(currentBill.bill_no, 'Invoice')
+      }
+    }
+    const handleAfterPrint = () => {
+      document.title = originalTitle
+    }
+
+    window.addEventListener('beforeprint', handleBeforePrint)
+    window.addEventListener('afterprint', handleAfterPrint)
+
     return () => {
       document.body.classList.remove('invoice-modal-open')
+      document.body.classList.remove('invoice-format-thermal')
+      document.body.classList.remove('invoice-format-a4')
+      window.removeEventListener('beforeprint', handleBeforePrint)
+      window.removeEventListener('afterprint', handleAfterPrint)
+      document.title = originalTitle
     }
-  }, [])
+  }, [currentBill?.bill_no])
+
+  useEffect(() => {
+    if (printFormat === 'thermal') {
+      document.body.classList.add('invoice-format-thermal')
+      document.body.classList.remove('invoice-format-a4')
+    } else {
+      document.body.classList.add('invoice-format-a4')
+      document.body.classList.remove('invoice-format-thermal')
+    }
+  }, [printFormat])
 
   useEffect(() => {
     setCurrentBill(bill)
@@ -161,8 +197,8 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
           })
         }
       } else {
-        // Fallback for standard browser
-        window.print()
+        // Fallback for standard browser: sets document.title to bill_no so Save as PDF suggests it
+        printInvoiceDocument(activeBill.bill_no)
         setStatus({
           type: 'success',
           text: `Bill ${activeBill.bill_no} saved permanently!`,
@@ -204,8 +240,11 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
         hour12: true,
       })
 
-  return (
-    <div className="erp-modal-backdrop invoice-modal-backdrop" onClick={onClose}>
+  return createPortal(
+    <div
+      className={`erp-modal-backdrop invoice-modal-backdrop ${printFormat === 'thermal' ? 'format-thermal' : 'format-a4'}`}
+      onClick={onClose}
+    >
       <div className="erp-modal-box invoice-modal-box" onClick={(e) => e.stopPropagation()}>
         {/* Top Header Controls (No-Print) */}
         <div className="invoice-modal-header no-print">
@@ -397,7 +436,7 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
                 )}
 
                 <div className="thermal-footer">
-                  <div className="thermal-bold">Thank You for Shopping at SWAMIDATT FOOTWEAR!</div>
+                  <div className="thermal-bold">Thank You for Shopping at SWAMIDATT ENTERPRISES!</div>
                   <div style={{ fontSize: '9px', marginTop: '2px' }}>Visit Again.</div>
                 </div>
               </div>
@@ -606,7 +645,7 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
                     <BarcodeDisplay value={currentBill.bill_no} width={1.6} height={34} fontSize={10} />
                   )}
                   <div className="inv-thankyou-msg">
-                    Thank You for Shopping at SWAMIDATT FOOTWEAR! Visit Again.
+                    Thank You for Shopping at SWAMIDATT ENTERPRISES! Visit Again.
                   </div>
                 </div>
 
@@ -694,6 +733,7 @@ export default function InvoiceModal({ bill, onClose, onSaveBill, onAfterSavePri
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

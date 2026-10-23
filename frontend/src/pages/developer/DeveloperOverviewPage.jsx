@@ -200,7 +200,7 @@ export default function DeveloperOverviewPage() {
       }}>
         <div>
           <h3 style={{ margin: '0 0 4px', fontSize: '0.95rem', fontWeight: 700, color: '#0f172a' }}>
-            SWAMIDATT FOOTWEAR Database Payload
+            SWAMIDATT ENTERPRISES Database Payload
           </h3>
           <p style={{ margin: 0, fontSize: '0.82rem', color: '#64748b' }}>
             Live record volume stored across core business tables

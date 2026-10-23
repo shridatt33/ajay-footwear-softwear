@@ -638,7 +638,7 @@ export default function DeveloperUsersPage() {
                 Application Privilege &amp; Access Control Matrix
               </h3>
               <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: '#64748b' }}>
-                System-enforced capabilities across the SWAMIDATT FOOTWEAR ERP and Developer Admin systems.
+                System-enforced capabilities across the SWAMIDATT ENTERPRISES ERP and Developer Admin systems.
               </p>
             </div>
             <table className="dev-table">
@@ -787,7 +787,7 @@ export default function DeveloperUsersPage() {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. SWAMIDATT FOOTWEAR - Solapur Branch"
+                  placeholder="e.g. SWAMIDATT ENTERPRISES - Solapur Branch"
                   value={createForm.shop_name}
                   onChange={(e) => setCreateForm({ ...createForm, shop_name: e.target.value })}
                   style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}

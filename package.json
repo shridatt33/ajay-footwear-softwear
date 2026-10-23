@@ -1,6 +1,6 @@
 {
   "name": "ajay-fw-application",
-  "description": "Swamidatt Footwear Management & Billing System",
+  "description": "Swamidatt Enterprises Management & Billing System",
   "version": "1.0.0",
   "private": true,
   "author": "Ajay FW Application",
@@ -16,8 +16,8 @@
   },
   "build": {
     "appId": "com.swamidatt.footwear",
-    "productName": "Swamidatt Footwear",
-    "artifactName": "Swamidatt Footwear Setup ${version}.${ext}",
+    "productName": "Swamidatt Enterprises",
+    "artifactName": "Swamidatt Enterprises Setup ${version}.${ext}",
     "directories": {
       "output": "dist-electron",
       "buildResources": "build"
@@ -55,7 +55,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Swamidatt Footwear"
+      "shortcutName": "Swamidatt Enterprises"
     }
   }
 }

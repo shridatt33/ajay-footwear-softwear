@@ -29,7 +29,7 @@ try {
 }
 
 const SHOP_METADATA = {
-  name: "SWAMIDATT FOOTWEAR",
+  name: "SWAMIDATT ENTERPRISES",
   tagline: "Retail Footwear & Accessories",
   address: "Wadgaon Aanad Alefhata Tal junner Dist pune",
   phone: "+91 7020466300",
@@ -233,7 +233,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Receipt ${escapeXml(billNo)}</title>
+  <title>${escapeXml(billNo || 'Receipt')}</title>
   <style>
     @page {
       size: 80mm auto;
@@ -346,7 +346,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
   </div>
 
   <div class="footer">
-    <div class="bold" style="margin-top: 3px;">Thank You for Shopping at SWAMIDATT FOOTWEAR!</div>
+    <div class="bold" style="margin-top: 3px;">Thank You for Shopping at SWAMIDATT ENTERPRISES!</div>
     <div style="font-size: 9px; margin-top: 1px;">Visit Again.</div>
   </div>
 
@@ -372,7 +372,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Tax Invoice - ${escapeXml(billNo)}</title>
+  <title>${escapeXml(billNo || 'Tax-Invoice')}</title>
   <style>
     @page {
       size: A4 portrait;
@@ -621,7 +621,7 @@ function generateInvoiceHtml(bill, printType = "a4") {
   <div class="bottom-bar">
     <div class="barcode-col">
       <svg id="a4-barcode"></svg>
-      <div class="thanks-text">Thank You for Shopping at SWAMIDATT FOOTWEAR! Visit Again.</div>
+      <div class="thanks-text">Thank You for Shopping at SWAMIDATT ENTERPRISES! Visit Again.</div>
     </div>
     <div class="sign-col">
       Authorized Signatory
@@ -648,7 +648,8 @@ function generateInvoiceHtml(bill, printType = "a4") {
 ipcMain.handle("save-invoice-pdf", async (event, { billNo, pdfBase64 }) => {
   try {
     if (!billNo) throw new Error("Invoice number is required");
-    const filename = `${billNo}.pdf`;
+    const cleanBillNo = String(billNo || 'Invoice').replace(/[<>:"/\\|?*\x00-\x1F]/g, '-').trim() || 'Invoice';
+    const filename = `${cleanBillNo}.pdf`;
     const targetPath = path.join(INVOICES_DIR, filename);
     const buffer = Buffer.from(pdfBase64, "base64");
     fs.writeFileSync(targetPath, buffer);
@@ -1024,7 +1025,7 @@ async function createWindow() {
     width: 1400,
     height: 900,
     show: false,
-    title: "SWAMIDATT FOOTWEAR ERP & POS",
+    title: "SWAMIDATT ENTERPRISES ERP & POS",
     icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf'
 import { SHOP_INFO } from '../config.js'
-import { groupInvoiceItems, extractInvoiceTotals, formatCurrency } from './invoiceUtils.js'
+import { groupInvoiceItems, extractInvoiceTotals, formatCurrency, sanitizeInvoiceFilename } from './invoiceUtils.js'
 
 export function generateInvoicePDFData(bill) {
   if (!bill) return null
@@ -374,14 +374,15 @@ export function generateInvoicePDFData(bill) {
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(9)
   doc.setTextColor(37, 99, 235)
-  doc.text('Thank You for Shopping at SWAMIDATT FOOTWEAR! Visit Again.', marginLeft, footerY + 6)
+  doc.text('Thank You for Shopping at SWAMIDATT ENTERPRISES! Visit Again.', marginLeft, footerY + 6)
 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(7.5)
   doc.setTextColor(148, 163, 184)
   doc.text('Authorized Signatory', pageWidth - marginRight, footerY + 6, { align: 'right' })
 
-  const filename = `${bill.bill_no || 'SW-bill'}.pdf`
+  const cleanBillNo = sanitizeInvoiceFilename(bill.bill_no, 'SW-bill')
+  const filename = `${cleanBillNo}.pdf`
   const dataUri = doc.output('datauristring')
   const pdfBase64 = dataUri.split(',')[1] || ''
   const blob = doc.output('blob')

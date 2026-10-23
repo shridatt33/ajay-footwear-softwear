@@ -394,13 +394,13 @@ def ensure_database_schema():
             cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_billing_status_check;")
             cur.execute("ALTER TABLE users ADD CONSTRAINT users_billing_status_check CHECK (billing_status IN ('active', 'suspended'));")
 
-            cur.execute("UPDATE users SET shop_name = 'SWAMIDATT FOOTWEAR - Main Branch' WHERE shop_name IS NULL AND role != 'developer_super_admin';")
+            cur.execute("UPDATE users SET shop_name = 'SWAMIDATT ENTERPRISES - Main Branch' WHERE shop_name IS NULL AND role != 'developer_super_admin';")
             cur.execute("UPDATE users SET shop_name = 'System Control Operations' WHERE shop_name IS NULL AND role = 'developer_super_admin';")
 
             cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;")
             cur.execute("ALTER TABLE bills ADD COLUMN IF NOT EXISTS shop_name VARCHAR(200);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_bills_user_id ON bills (user_id);")
-            cur.execute("UPDATE bills SET shop_name = 'SWAMIDATT FOOTWEAR - Main Branch' WHERE shop_name IS NULL;")
+            cur.execute("UPDATE bills SET shop_name = 'SWAMIDATT ENTERPRISES - Main Branch' WHERE shop_name IS NULL;")
 
             # 11. Developer Security Audit Logs
             cur.execute(
@@ -900,7 +900,7 @@ def auth_login():
                 "username": u_username,
                 "full_name": u_name,
                 "role": u_role,
-                "shop_name": u_shop_name or "SWAMIDATT FOOTWEAR - Main Branch",
+                "shop_name": u_shop_name or "SWAMIDATT ENTERPRISES - Main Branch",
                 "billing_status": u_billing_status or "active"
             },
             "message": "Login successful"
@@ -968,7 +968,7 @@ def auth_me():
                 "username": u_username,
                 "full_name": u_name,
                 "role": u_role,
-                "shop_name": u_shop_name or "SWAMIDATT FOOTWEAR - Main Branch",
+                "shop_name": u_shop_name or "SWAMIDATT ENTERPRISES - Main Branch",
                 "billing_status": u_billing_status or "active"
             }
         }), 200
@@ -1272,7 +1272,7 @@ def developer_overview(current_user):
         return jsonify({
             "success": True,
             "application": {
-                "name": "SWAMIDATT FOOTWEAR ERP & POS",
+                "name": "SWAMIDATT ENTERPRISES ERP & POS",
                 "status": "Operational",
                 "version": "1.2.0",
                 "started_at": SERVER_START_TIME.isoformat(),
@@ -1329,7 +1329,7 @@ def developer_get_users(current_user):
                     SELECT 
                         u.id, 
                         u.username, 
-                        COALESCE(u.shop_name, 'SWAMIDATT FOOTWEAR - Main Branch') AS shop_name,
+                        COALESCE(u.shop_name, 'SWAMIDATT ENTERPRISES - Main Branch') AS shop_name,
                         u.full_name, 
                         COALESCE(u.phone, '') AS phone,
                         COALESCE(u.email, '') AS email,
@@ -2094,7 +2094,7 @@ def developer_create_backup(current_user):
                     total_records += len(serialized_rows)
 
         backup_payload = {
-            "application": "SWAMIDATT FOOTWEAR ERP",
+            "application": "SWAMIDATT ENTERPRISES ERP",
             "version": "1.0",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": current_user["username"],
@@ -3231,7 +3231,7 @@ def billing_checkout():
                     bill_status = "Paid"
                     dues_amount = 0.0
 
-                effective_shop_name = auth_shop_name or "SWAMIDATT FOOTWEAR - Main Branch"
+                effective_shop_name = auth_shop_name or "SWAMIDATT ENTERPRISES - Main Branch"
 
                 # Insert bill with user_id and shop_name
                 cur.execute(

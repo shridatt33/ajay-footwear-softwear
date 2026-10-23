@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SWAMIDATT FOOTWEAR - Developer Super Admin Account Provisioning CLI
+SWAMIDATT ENTERPRISES - Developer Super Admin Account Provisioning CLI
 Use this utility to securely create or update the primary developer account.
 Developer accounts are assigned role = 'developer_super_admin' and have exclusive
 access to the Developer Super Admin Dashboard.
@@ -147,7 +147,7 @@ def provision_developer_account(username: str, full_name: str, password: str):
                 conn.commit()
 
         print("\n=======================================================")
-        print(" SWAMIDATT FOOTWEAR - DEVELOPER ACCOUNT CONFIGURED")
+        print(" SWAMIDATT ENTERPRISES - DEVELOPER ACCOUNT CONFIGURED")
         print("=======================================================")
         print(f" Username : {username}")
         print(f" Full Name: {full_name}")
@@ -163,7 +163,7 @@ def provision_developer_account(username: str, full_name: str, password: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Provision or update a Developer Super Admin account for SWAMIDATT FOOTWEAR."
+        description="Provision or update a Developer Super Admin account for SWAMIDATT ENTERPRISES."
     )
     parser.add_argument("--username", "-u", help="Developer username (e.g. dev_admin)")
     parser.add_argument("--name", "-n", help="Full display name (e.g. 'Lead Systems Developer')")
